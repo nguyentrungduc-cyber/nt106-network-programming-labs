@@ -49,17 +49,17 @@
             // 
             label7.AutoSize = true;
             label7.ForeColor = SystemColors.ControlDarkDark;
-            label7.Location = new Point(122, 179);
+            label7.Location = new Point(153, 179);
             label7.Name = "label7";
-            label7.Size = new Size(981, 40);
+            label7.Size = new Size(621, 60);
             label7.TabIndex = 31;
-            label7.Text = "------------------------------------------------------------------------------------------------------------------------------------------------------------------\r\n\r\n";
+            label7.Text = "------------------------------------------------------------------------------------------------------\r\n\r\n\r\n";
             // 
             // label6
             // 
             label6.AutoSize = true;
             label6.Font = new Font("Microsoft Sans Serif", 9F, FontStyle.Regular, GraphicsUnit.Point, 0);
-            label6.Location = new Point(72, 261);
+            label6.Location = new Point(69, 261);
             label6.Name = "label6";
             label6.Size = new Size(46, 18);
             label6.TabIndex = 30;
@@ -69,7 +69,7 @@
             // 
             label5.AutoSize = true;
             label5.Font = new Font("Microsoft Sans Serif", 9F, FontStyle.Regular, GraphicsUnit.Point, 0);
-            label5.Location = new Point(55, 201);
+            label5.Location = new Point(54, 201);
             label5.Name = "label5";
             label5.Size = new Size(61, 18);
             label5.TabIndex = 29;
@@ -104,7 +104,7 @@
             btnSend.Location = new Point(756, 112);
             btnSend.Margin = new Padding(3, 2, 3, 2);
             btnSend.Name = "btnSend";
-            btnSend.Size = new Size(96, 75);
+            btnSend.Size = new Size(96, 65);
             btnSend.TabIndex = 26;
             btnSend.Text = "SEND";
             btnSend.UseVisualStyleBackColor = false;
@@ -143,7 +143,7 @@
             // 
             label3.AutoSize = true;
             label3.Font = new Font("Microsoft Sans Serif", 9F, FontStyle.Regular, GraphicsUnit.Point, 0);
-            label3.Location = new Point(37, 122);
+            label3.Location = new Point(36, 122);
             label3.Name = "label3";
             label3.Size = new Size(79, 18);
             label3.TabIndex = 22;
@@ -163,7 +163,7 @@
             // 
             label1.AutoSize = true;
             label1.Font = new Font("Microsoft Sans Serif", 9F, FontStyle.Regular, GraphicsUnit.Point, 0);
-            label1.Location = new Point(72, 79);
+            label1.Location = new Point(67, 79);
             label1.Name = "label1";
             label1.Size = new Size(48, 18);
             label1.TabIndex = 20;
@@ -173,6 +173,7 @@
             // 
             label2.AutoSize = true;
             label2.Font = new Font("Microsoft Sans Serif", 16F, FontStyle.Bold, GraphicsUnit.Point, 0);
+            label2.ForeColor = Color.Red;
             label2.Location = new Point(347, 15);
             label2.Name = "label2";
             label2.Size = new Size(246, 31);
@@ -191,13 +192,14 @@
             // 
             // btnIMG
             // 
+            btnIMG.BackColor = Color.FromArgb(192, 192, 255);
             btnIMG.Location = new Point(692, 525);
             btnIMG.Margin = new Padding(3, 5, 3, 5);
             btnIMG.Name = "btnIMG";
             btnIMG.Size = new Size(159, 72);
             btnIMG.TabIndex = 32;
-            btnIMG.Text = "images/files";
-            btnIMG.UseVisualStyleBackColor = true;
+            btnIMG.Text = "Upload images/files";
+            btnIMG.UseVisualStyleBackColor = false;
             btnIMG.Click += btnIMG_Click;
             // 
             // Bai03
@@ -224,7 +226,7 @@
             MaximizeBox = false;
             Name = "Bai03";
             StartPosition = FormStartPosition.CenterScreen;
-            Text = "Bài 03";
+            Text = "Bài 3 - Viết ứng dụng cho phép gửi mail (Via Gmail)";
             Load += Bai03_Load;
             ResumeLayout(false);
             PerformLayout();
