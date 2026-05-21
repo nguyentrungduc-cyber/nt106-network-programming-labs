@@ -91,10 +91,10 @@ namespace Lab05
                         // Bỏ qua các mẩu chuỗi rác hoặc chuỗi kết thúc A03 OK
                         if (string.IsNullOrWhiteSpace(rawData) || rawData.Trim().StartsWith("A03")) continue;
 
-                        // Logic mới: Bóc tách chính xác từng dòng Header
-                        string subject = ExtractHeader(rawData, "Subject");
-                        string from = ExtractHeader(rawData, "From");
-                        string date = ExtractHeader(rawData, "Date");
+                        // Logic mới: Bóc tách chính xác từng dòng Header và Giải mã UTF-8
+                        string subject = DecodeMimeWords(ExtractHeader(rawData, "Subject"));
+                        string from = DecodeMimeWords(ExtractHeader(rawData, "From"));
+                        string date = ExtractHeader(rawData, "Date"); // Date không cần giải mã
 
                         // Nếu không lấy được cả Subject và From thì khả năng cao đây là chuỗi rác, bỏ qua
                         if (string.IsNullOrEmpty(subject) && string.IsNullOrEmpty(from)) continue;
@@ -142,7 +142,7 @@ namespace Lab05
             return result;
         }
 
-        // Logic bóc tách Header ĐÃ ĐƯỢC LÀM LẠI HOÀN TOÀN
+        // Logic bóc tách Header
         private string ExtractHeader(string rawData, string headerName)
         {
             // Dùng (?im) để quét dòng bắt đầu bằng TênHeader:, bỏ qua phân biệt hoa thường và lấy phần nội dung phía sau.
@@ -155,6 +155,61 @@ namespace Lab05
 
             // Trả về chuỗi rỗng để ListView không bị hiển thị các ô trắng lỗi
             return "";
+        }
+
+        // Hàm giải mã MIME Encoded-Word (UTF-8)
+        private string DecodeMimeWords(string input)
+        {
+            if (string.IsNullOrEmpty(input)) return input;
+
+            // Dùng Regex tìm chuỗi mã hóa có định dạng: =?charset?encoding?data?=
+            return Regex.Replace(input, @"=\?(.*?)\?(B|Q|b|q)\?(.*?)\?=", match =>
+            {
+                string charset = match.Groups[1].Value;
+                string encoding = match.Groups[2].Value.ToUpper();
+                string data = match.Groups[3].Value;
+
+                try
+                {
+                    Encoding enc = Encoding.GetEncoding(charset);
+
+                    // Giải mã Base64
+                    if (encoding == "B")
+                    {
+                        byte[] bytes = Convert.FromBase64String(data);
+                        return enc.GetString(bytes);
+                    }
+                    // Giải mã Quoted-Printable
+                    else if (encoding == "Q")
+                    {
+                        data = data.Replace("_", " ");
+                        var bytes = new List<byte>();
+                        for (int i = 0; i < data.Length; i++)
+                        {
+                            if (data[i] == '=' && i + 2 < data.Length)
+                            {
+                                try
+                                {
+                                    bytes.Add(Convert.ToByte(data.Substring(i + 1, 2), 16));
+                                    i += 2;
+                                }
+                                catch { bytes.Add((byte)data[i]); }
+                            }
+                            else
+                            {
+                                bytes.Add((byte)data[i]);
+                            }
+                        }
+                        return enc.GetString(bytes.ToArray());
+                    }
+                }
+                catch
+                {
+                    // Nếu có lỗi parse thì bỏ qua, giữ nguyên chuỗi gốc
+                }
+
+                return match.Value;
+            });
         }
 
         private bool IsMailFromToday(string dateHeader)
