@@ -83,6 +83,7 @@
             tbBody.Name = "tbBody";
             tbBody.Size = new Size(559, 336);
             tbBody.TabIndex = 28;
+            tbBody.Text = "Hello,\r\n\r\nThis is a mail from Mail Client (Send Via Gmail).";
             // 
             // tbSubject
             // 
@@ -92,6 +93,7 @@
             tbSubject.Name = "tbSubject";
             tbSubject.Size = new Size(721, 39);
             tbSubject.TabIndex = 27;
+            tbSubject.Text = "Test mail Via Gmail ";
             // 
             // btnSend
             // 
@@ -185,7 +187,7 @@
             rtbFile.Name = "rtbFile";
             rtbFile.Size = new Size(160, 258);
             rtbFile.TabIndex = 33;
-            rtbFile.Text = "";
+            rtbFile.Text = "C:\\Users\\ADMIN\\Downloads\\z7759436784979_226ac18f1045fd00b27b6fdfe4d41e05.jpg\nC:\\Users\\ADMIN\\Downloads\\appsettings.json";
             // 
             // btnIMG
             // 
@@ -219,6 +221,7 @@
             Controls.Add(label2);
             Controls.Add(label7);
             Margin = new Padding(3, 2, 3, 2);
+            MaximizeBox = false;
             Name = "Bai03";
             StartPosition = FormStartPosition.CenterScreen;
             Text = "Bài 03";
