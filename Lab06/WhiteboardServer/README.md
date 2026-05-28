@@ -1,24 +1,26 @@
 # Collaborative Whiteboard Application
 
-A real-time collaborative whiteboard application built with C# and Windows Forms, using TCP socket communication for synchronization between multiple clients.
+A real-time collaborative whiteboard application built with C# and Windows Forms, using TCP socket communication for synchronization between multiple clients. Features a modern dark-theme UI with preset color palette, emoji icons, and real-time collaboration.
 
 ## Features
 
 ### Core Requirements ✓
 - **Server-Client Architecture**: Built on TCP socket communication
 - **Real-time Drawing Synchronization**: All clients see changes instantly
-- **Mouse Drawing**: Draw freely with the mouse
+- **Mouse Drawing**: Draw freely with the mouse (smooth lines with rounded caps)
 - **Auto-save and Close**: End button saves whiteboard as PNG/JPG and closes all clients
 - **Customizable Drawing Tools**: 
-  - Color picker for line colors
-  - Adjustable line thickness (1-20 pixels)
-- **Connected Client Counter**: Displays number of active clients
+  - Custom color picker + 12 preset colors palette
+  - Adjustable line thickness (1-20 pixels) with live preview
+  - Eraser tool with visual toggle (turns red when active)
+- **Connected Client Counter**: Displays number of active clients in a colored badge
 
 ### Extension Features ✓
-- **Image Insertion from URL**: Insert images from the internet with automatic resizing
-- **New Client Synchronization**: Newly joined clients receive the current whiteboard state
-- **Email Alert System**: Sends email to administrator when client limit (5) is reached
-- **Eraser Tool**: Toggle between drawing and erasing
+- **Image Insertion from URL**: Insert images from the internet with automatic resizing (maintains aspect ratio, max 300x300)
+- **New Client Synchronization**: Newly joined clients receive the complete current whiteboard state (including all drawings and images)
+- **Email Alert System**: Sends email alert to administrator when client limit (5 clients) is reached
+- **Eraser Tool**: Toggle between drawing and erasing mode
+- **Confirmation Dialogs**: Clear and End actions require confirmation to prevent accidents
 
 ## Architecture
 
@@ -77,12 +79,13 @@ WhiteboardServer/
 4. Start drawing - all connected clients will see your changes in real-time
 
 ### Drawing Tools
-- **Choose Color**: Opens color picker dialog
-- **Thickness Slider**: Adjust line thickness (1-20 pixels)
-- **Eraser**: Toggle eraser mode (draws in white)
-- **Clear Whiteboard**: Clears entire whiteboard for all clients
-- **Insert Image**: Enter image URL and click to insert (auto-resizes to max 300x300)
-- **End Session**: Saves whiteboard as PNG to Desktop and closes all clients
+- **🎨 Custom Color**: Opens color picker dialog for custom colors
+- **Preset Colors**: Click any color swatch in the palette (12 preset colors)
+- **✏️ Thickness**: Use slider (1-20 pixels), shows current value
+- **🧹 Eraser**: Toggle eraser mode (turns red when active)
+- **🗑 Clear**: Clears entire whiteboard (with confirmation dialog)
+- **🖼 Insert Image**: Enter image URL and click to insert (auto-resizes to max 300x300, maintains aspect ratio)
+- **✕ End Session**: Saves whiteboard as PNG to Desktop and closes all clients (with confirmation dialog)
 
 ## Configuration
 
@@ -112,6 +115,20 @@ Edit both files at:
 server = new TcpListener(IPAddress.Any, 8888);  // Server
 client.Connect(serverIP, 8888);                  // Client
 ```
+
+## UI Design (Modern Whiteboard Game Style)
+- **Dark Theme Toolbar**: Dark blue (#2c3e50) right-side panel with organized sections
+- **Top Header Bar**: App title in Segoe UI 18pt bold
+- **Preset Color Palette**: 12 quick-select colors (dark grays, red, orange, yellow, green, purple, blue, teal, gray, black, white)
+- **Live Color Preview**: Shows current selected color in real-time
+- **Client Count Badge**: Colored panel showing connected users count
+- **Thickness Display**: Trackbar with large numeric readout (green font)
+- **Emoji Icons**: 🎨 🧹 🗑 🖼 ✕ 🔌 for visual tool identification
+- **Toggle States**: Eraser button turns red when active
+- **Confirmation Dialogs**: Clear and End actions require Yes/No confirmation
+- **Placeholder Text**: Smart textboxes with placeholder behavior on focus enter/leave
+- **Smooth Drawing**: Lines use `LineCap.Round` for polished appearance
+- **Fixed Window**: 1178×692 centered on screen, non-resizeable
 
 ## Technical Details
 
@@ -181,6 +198,23 @@ client.Connect(serverIP, 8888);                  // Client
 3. **No Undo/Redo**: Drawing actions cannot be undone
 4. **No User Authentication**: No login system
 5. **Single Whiteboard**: Only one whiteboard session per server
+
+## Bug Fixes Applied (v2.0)
+
+### Critical Bug Fixes
+1. **End Button Race Condition**: Client was calling `Application.Exit()` immediately without waiting for server's End broadcast. Fixed: client now sends End message and waits for server acknowledgment with 3-second fallback timeout.
+2. **WebClient Memory Leak**: `WebClient` was not disposed after image download. Fixed: added `using` statement for proper disposal.
+3. **OnFormClosing Deadlock**: Potential lock contention between UI thread and background thread. Fixed: lock acquisition reordered to prevent deadlock scenarios.
+4. **Thread-Unsafe Save**: `SaveWhiteboardImage()` was called from background thread without marshaling to UI thread. Fixed: added `Invoke` protection for all save operations.
+5. **Stream Null Reference**: `stream.Read()` could throw if stream becomes null. Fixed: added `ReadFully` helper with proper null checks and partial read handling.
+6. **Drawing Quality**: Lines had jagged edges. Fixed: added `LineCap.Round` for smooth line endings.
+
+### Stability Improvements
+- Added `isEnding` flag to prevent duplicate End processing
+- Added `isServerRunning` flag for clean server shutdown
+- Proper disposal of Graphics and Bitmap resources in `OnFormClosing`
+- Graceful handling of `ObjectDisposedException` when stopping server
+- Timer-based fallback for End broadcast (3-second timeout)
 
 ## Future Enhancements
 
