@@ -82,7 +82,6 @@ namespace Client
                 panelWhiteboard.BackgroundImageLayout = ImageLayout.None;
 
                 ConnectToServer();
-                drawingBitmap.MakeTransparent(Color.White);
                 numericUpDownThickness.Minimum = 1;
                 numericUpDownThickness.Maximum = 10;
                 numericUpDownThickness.Value = 2;
@@ -454,15 +453,45 @@ namespace Client
                 string fileName = $"Whiteboard_{DateTime.Now:yyyyMMdd_HHmmss}.png";
                 string fullPath = Path.Combine(picturesPath, fileName);
 
-                lock (drawingBitmap)
+                int w = panelWhiteboard.Width;
+                int h = panelWhiteboard.Height;
+                if (w <= 0 || h <= 0)
                 {
-                    if (drawingBitmap == null)
+                    MessageBox.Show("Kích thước bảng vẽ không hợp lệ.", "Lỗi",
+                                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
+                using (Bitmap saveBitmap = new Bitmap(w, h))
+                using (Graphics g = Graphics.FromImage(saveBitmap))
+                {
+                    g.Clear(Color.White);
+
+                    foreach (var item in imageItems)
                     {
-                        MessageBox.Show("Không có dữ liệu để lưu.", "Thông báo",
-                                        MessageBoxButtons.OK, MessageBoxIcon.Information);
-                        return;
+                        if (item != null && item.Image != null)
+                        {
+                            g.DrawImage(item.Image, item.Rect);
+                        }
                     }
-                    drawingBitmap.Save(fullPath, System.Drawing.Imaging.ImageFormat.Png);
+
+                    lock (drawingBitmap)
+                    {
+                        if (drawingBitmap == null)
+                        {
+                            MessageBox.Show("Không có dữ liệu để lưu.", "Thông báo",
+                                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                            return;
+                        }
+                        using (var attr = new System.Drawing.Imaging.ImageAttributes())
+                        {
+                            attr.SetColorKey(Color.White, Color.White);
+                            Rectangle fullRect = new Rectangle(0, 0, drawingBitmap.Width, drawingBitmap.Height);
+                            g.DrawImage(drawingBitmap, fullRect, 0, 0, drawingBitmap.Width, drawingBitmap.Height, GraphicsUnit.Pixel, attr);
+                        }
+                    }
+
+                    saveBitmap.Save(fullPath, System.Drawing.Imaging.ImageFormat.Png);
                 }
 
                 MessageBox.Show("Đã lưu ảnh thành công tại:\n" + fullPath, "Thông báo",
@@ -954,7 +983,12 @@ namespace Client
 
                     try
                     {
-                        e.Graphics.DrawImageUnscaled(drawingBitmap, Point.Empty);
+                        using (var attr = new System.Drawing.Imaging.ImageAttributes())
+                        {
+                            attr.SetColorKey(Color.White, Color.White);
+                            Rectangle fullRect = new Rectangle(0, 0, drawingBitmap.Width, drawingBitmap.Height);
+                            e.Graphics.DrawImage(drawingBitmap, fullRect, 0, 0, drawingBitmap.Width, drawingBitmap.Height, GraphicsUnit.Pixel, attr);
+                        }
                     }
                     catch (Exception ex)
                     {
