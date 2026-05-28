@@ -14,64 +14,105 @@ class Server
     private int port = 9000;
     private readonly object _lock = new object();
     private const int maxClients = 5;
+    private volatile bool isRunning = true;
 
-    // Lưu lịch sử các message (DRAW;..., IMAGE;...)
     private List<string> whiteboardHistory = new List<string>();
 
     public void Start()
     {
-        listener = new TcpListener(IPAddress.Any, port);
-        listener.Start();
-        Console.WriteLine("Server started on port " + port);
-        ListenForClients();
+        try
+        {
+            listener = new TcpListener(IPAddress.Any, port);
+            listener.Start();
+            Console.WriteLine("Server started on port " + port);
+            ListenForClients();
+        }
+        catch (SocketException ex) when (ex.SocketErrorCode == SocketError.AddressAlreadyInUse)
+        {
+            Console.WriteLine("Lỗi: Cổng " + port + " đã được sử dụng. Vui lòng chọn cổng khác.");
+            Console.WriteLine("Nhấn Enter để thoát...");
+            Console.ReadLine();
+        }
+        catch (SocketException ex)
+        {
+            Console.WriteLine("Lỗi socket khi khởi động server: " + ex.Message);
+            Console.WriteLine("Nhấn Enter để thoát...");
+            Console.ReadLine();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Lỗi khởi động server: " + ex.Message);
+            Console.WriteLine("Nhấn Enter để thoát...");
+            Console.ReadLine();
+        }
     }
 
     private void ListenForClients()
     {
-        while (true)
+        while (isRunning)
         {
-            TcpClient client = listener.AcceptTcpClient();
-
-            lock (_lock)
+            try
             {
-                if (clients.Count >= maxClients)
+                TcpClient client = listener.AcceptTcpClient();
+                if (!isRunning) break;
+
+                lock (_lock)
                 {
-                    Console.WriteLine("Client rejected - max clients reached");
-                    client.Close();
-                    continue;
+                    if (clients.Count >= maxClients)
+                    {
+                        Console.WriteLine("Client rejected - max clients reached");
+                        try { client.Close(); } catch { }
+                        continue;
+                    }
+
+                    clients.Add(client);
+                    Console.WriteLine("Client connected. Total clients: " + clients.Count);
+
+                    if (clients.Count == maxClients)
+                    {
+                        Thread emailThread = new Thread(SendAlertEmail);
+                        emailThread.IsBackground = true;
+                        emailThread.Start();
+                    }
+
+                    SendHistoryToClient(client);
                 }
 
-                clients.Add(client);
-                Console.WriteLine("Client connected. Total clients: " + clients.Count);
-
-                // Gửi email cảnh báo khi đủ maxClients
-                if (clients.Count == maxClients)
-                {
-                    SendAlertEmail();
-                }
-
-                // Gửi lại lịch sử whiteboard cho client mới
-                SendHistoryToClient(client);
+                Thread clientThread = new Thread(HandleClient);
+                clientThread.IsBackground = true;
+                clientThread.Start(client);
             }
-
-            Thread clientThread = new Thread(HandleClient);
-            clientThread.IsBackground = true;
-            clientThread.Start(client);
+            catch (ObjectDisposedException)
+            {
+                break;
+            }
+            catch (SocketException ex)
+            {
+                Console.WriteLine("Socket error accepting client: " + ex.Message);
+                if (!isRunning) break;
+                Thread.Sleep(100);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Error accepting client: " + ex.Message);
+                if (!isRunning) break;
+                Thread.Sleep(100);
+            }
         }
     }
 
     private void HandleClient(object obj)
     {
         TcpClient client = (TcpClient)obj;
-        NetworkStream stream = client.GetStream();
-        byte[] buffer = new byte[4096];
+        NetworkStream stream = null;
+        byte[] buffer = new byte[8192];
         StringBuilder sb = new StringBuilder();
 
         try
         {
-            while (true)
+            stream = client.GetStream();
+            while (isRunning)
             {
-                // Thêm timeout cho Read
                 if (stream.DataAvailable)
                 {
                     int bytesRead = stream.Read(buffer, 0, buffer.Length);
@@ -97,12 +138,19 @@ class Server
                                 }
                                 else if (message.StartsWith("DELETE"))
                                 {
-                                    string[] parts = message.Split(';');
-                                    if (parts.Length >= 2)
+                                    try
                                     {
-                                        string target = parts[1]; // e.g. DRAW;id=abc
-                                        whiteboardHistory.RemoveAll(msg => msg.Contains(target));
-                                        Console.WriteLine("Deleted from history: " + target);
+                                        string[] parts = message.Split(';');
+                                        if (parts.Length >= 2)
+                                        {
+                                            string target = parts[1];
+                                            whiteboardHistory.RemoveAll(msg => msg.Contains(target));
+                                            Console.WriteLine("Deleted from history: " + target);
+                                        }
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        Console.WriteLine("Delete history error: " + ex.Message);
                                     }
                                 }
                             }
@@ -115,8 +163,12 @@ class Server
                     sb.Clear();
                     sb.Append(allData);
                 }
-                Thread.Sleep(10); // Giảm CPU usage
+                Thread.Sleep(10);
             }
+        }
+        catch (InvalidOperationException ex)
+        {
+            Console.WriteLine("Client error (InvalidOperation): " + ex.Message);
         }
         catch (IOException ex)
         {
@@ -140,44 +192,63 @@ class Server
                     Console.WriteLine("Client disconnected. Total clients: " + clients.Count);
                 }
             }
+            if (stream != null) try { stream.Close(); } catch { }
             try { client.Close(); } catch { }
         }
     }
 
     private void Broadcast(string message, TcpClient excludeClient)
     {
-        byte[] data = Encoding.UTF8.GetBytes(message + "\n");
-        List<TcpClient> disconnectedClients = new List<TcpClient>();
-
-        lock (_lock)
+        try
         {
-            foreach (var c in clients)
+            byte[] data = Encoding.UTF8.GetBytes(message + "\n");
+            List<TcpClient> disconnectedClients = new List<TcpClient>();
+
+            lock (_lock)
             {
-                if (c != excludeClient)
+                foreach (var c in clients)
                 {
-                    try
+                    if (c != excludeClient)
                     {
-                        NetworkStream stream = c.GetStream();
-                        if (stream.CanWrite)
+                        try
                         {
-                            stream.Write(data, 0, data.Length);
-                            stream.Flush();
+                            NetworkStream stream = c.GetStream();
+                            if (stream.CanWrite)
+                            {
+                                stream.Write(data, 0, data.Length);
+                                stream.Flush();
+                            }
+                        }
+                        catch (ObjectDisposedException)
+                        {
+                            disconnectedClients.Add(c);
+                        }
+                        catch (IOException)
+                        {
+                            disconnectedClients.Add(c);
+                        }
+                        catch (SocketException)
+                        {
+                            disconnectedClients.Add(c);
+                        }
+                        catch (Exception)
+                        {
+                            disconnectedClients.Add(c);
                         }
                     }
-                    catch
-                    {
-                        disconnectedClients.Add(c);
-                    }
+                }
+
+                foreach (var dc in disconnectedClients)
+                {
+                    clients.Remove(dc);
+                    try { dc.Close(); } catch { }
+                    Console.WriteLine("Client disconnected. Total clients: " + clients.Count);
                 }
             }
-
-            // Remove disconnected clients
-            foreach (var dc in disconnectedClients)
-            {
-                clients.Remove(dc);
-                dc.Close();
-                Console.WriteLine($"Client disconnected. Total clients: {clients.Count}");
-            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Broadcast error: " + ex.Message);
         }
     }
 
@@ -191,9 +262,17 @@ class Server
                 byte[] data = Encoding.UTF8.GetBytes(msg + "\n");
                 stream.Write(data, 0, data.Length);
                 stream.Flush();
-                Thread.Sleep(1); // Delay nhỏ để tránh quá tải mạng
+                Thread.Sleep(1);
             }
             Console.WriteLine("Sent whiteboard history to new client.");
+        }
+        catch (IOException ex)
+        {
+            Console.WriteLine("Lỗi gửi lịch sử (IO): " + ex.Message);
+        }
+        catch (SocketException ex)
+        {
+            Console.WriteLine("Lỗi gửi lịch sử (Socket): " + ex.Message);
         }
         catch (Exception ex)
         {
@@ -205,22 +284,31 @@ class Server
     {
         try
         {
-            MailMessage mail = new MailMessage();
-            mail.From = new MailAddress("nguyentrungduc190906@gmail.com"); // Email hợp lệ
-            mail.To.Add("nguyentrungduc190906@gmail.com"); // Người nhận
-            mail.Subject = "Cảnh báo: Đã có đủ 5 Client kết nối";
-            mail.Body = "Hiện tại Server đã có 5 Client đang hoạt động.";
+            using (MailMessage mail = new MailMessage())
+            {
+                mail.From = new MailAddress("nguyentrungduc190906@gmail.com");
+                mail.To.Add("nguyentrungduc190906@gmail.com");
+                mail.Subject = "Cảnh báo: Đã có đủ 5 Client kết nối";
+                mail.Body = "Hiện tại Server đã có 5 Client đang hoạt động.";
 
-            SmtpClient smtp = new SmtpClient("smtp.gmail.com", 587); // port 587 thường dùng
-            smtp.Credentials = new NetworkCredential("nguyentrungduc190906@gmail.com", "hhxu vtbr iwdm hrmo");
-            smtp.EnableSsl = true; // Nếu server hỗ trợ SSL/TLS
+                using (SmtpClient smtp = new SmtpClient("smtp.gmail.com", 587))
+                {
+                    smtp.Credentials = new NetworkCredential("nguyentrungduc190906@gmail.com", "hhxu vtbr iwdm hrmo");
+                    smtp.EnableSsl = true;
 
-            // Bỏ qua lỗi chứng chỉ (chỉ test, không dùng trong production)
-            System.Net.ServicePointManager.ServerCertificateValidationCallback =
-                (sender, certificate, chain, sslPolicyErrors) => true;
+                    System.Net.ServicePointManager.ServerCertificateValidationCallback =
+                        (sender, certificate, chain, sslPolicyErrors) => true;
 
-            smtp.Send(mail);
-            Console.WriteLine("Alert message was sent to the admin successfully.");
+                    smtp.Send(mail);
+                    Console.WriteLine("Alert message was sent to the admin successfully.");
+                }
+            }
+        }
+        catch (SmtpException ex)
+        {
+            Console.WriteLine("Lỗi SMTP khi gửi email: " + ex.Message);
+            if (ex.InnerException != null)
+                Console.WriteLine("Inner Exception: " + ex.InnerException.Message);
         }
         catch (Exception ex)
         {

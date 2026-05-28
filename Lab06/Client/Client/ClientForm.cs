@@ -21,8 +21,6 @@ namespace Client
 {
     public partial class ClientForm : Form
     {
-        private Rectangle currentImageRect = Rectangle.Empty;
-        private string currentImageBase64 = ""; // THÊM DÒNG NÀY để theo dõi chuỗi dữ liệu ảnh hiện tại
         private Rectangle GetRectangleFromPoints(Point p1, Point p2)
         {
             return new Rectangle(
@@ -34,16 +32,15 @@ namespace Client
         List<Point> currentLine = null; 
         List<List<Point>> lines = new List<List<Point>>();
 
-        private DateTime lastSendTime = DateTime.MinValue;
-
         private TcpClient client;
         private NetworkStream stream;
+        private bool isDisconnecting = false;
 
-        private Point startPoint;    // điểm bắt đầu vẽ (MouseDown)
-        private Point lastPoint;     // điểm cuối cùng vẽ (dùng cho FreeHand hoặc vẽ)
-        private Point currentPoint;  // điểm hiện tại khi kéo chuột (MouseMove) dùng để vẽ tạm thời
+        private Point startPoint;
+        private Point lastPoint;
+        private Point currentPoint;
         private bool isDrawing = false;
-        private DrawingMode currentMode;  // enum bạn tự định nghĩa như Line, Rectangle, Ellipse, FreeHand
+        private DrawingMode currentMode;
 
         private Bitmap drawingBitmap;
         private Graphics graphics;
@@ -53,8 +50,15 @@ namespace Client
         private Color currentColor = Color.Black;
         private int penThickness = 2;
 
-        private Image currentImage = null;
-        // private Rectangle currentImageRect = Rectangle.Empty;
+        private class ImageItem
+        {
+            public string Id { get; set; }
+            public Image Image { get; set; }
+            public Rectangle Rect { get; set; }
+            public string Base64 { get; set; }
+        }
+        private List<ImageItem> imageItems = new List<ImageItem>();
+        private int selectedImageIndex = -1;
         private bool isMovingImage = false;
         private bool isResizingImage = false;
         private Point mouseDownPos;
@@ -67,46 +71,42 @@ namespace Client
 
         public ClientForm()
         {
-            InitializeComponent();
-
-            drawingBitmap = new Bitmap(panelWhiteboard.Width, panelWhiteboard.Height);
-            graphics = Graphics.FromImage(drawingBitmap);
-            graphics.Clear(Color.White);
-
-          
-            panelWhiteboard.BackgroundImageLayout = ImageLayout.None;
-
-            ConnectToServer();
-            // Đặt màu trắng của drawingBitmap thành trong suốt để không che mất ảnh nằm phía dưới
-            drawingBitmap.MakeTransparent(Color.White);
-            numericUpDownThickness.Minimum = 1;
-            numericUpDownThickness.Maximum = 10;
-            numericUpDownThickness.Value = 2;
-            numericUpDownThickness.ValueChanged += NumericUpDownThickness_ValueChanged;
-
-            panelWhiteboard.MouseDown += PanelWhiteboard_MouseDown;
-            panelWhiteboard.MouseMove += PanelWhiteboard_MouseMove;
-            panelWhiteboard.MouseUp += panelWhiteboard_MouseUp;
-
-            btnInsertImage.Click += btnInsertImage_Click;
-            // buttonEnd.Click += buttonEnd_Click;
-            btnChooseColor.Click += btnChooseColor_Click;
-
-            comboBoxDrawMode.Items.Add("Freehand");
-            comboBoxDrawMode.Items.Add("Rectangle");
-            comboBoxDrawMode.Items.Add("Ellipse");
-            comboBoxDrawMode.Items.Add("Line");
-            comboBoxDrawMode.SelectedIndex = 0; // chọn mặc định là Freehand
-            comboBoxDrawMode.SelectedIndexChanged += ComboBoxDrawMode_SelectedIndexChanged;
-
-        }
-        private void SendCurrentImagePositionThrottled()
-        {
-            var now = DateTime.Now;
-            if ((now - lastSendTime).TotalMilliseconds > 50) // cách nhau ít nhất 50ms (20 lần/s)
+            try
             {
-                SendCurrentImagePosition();
-                lastSendTime = now;
+                InitializeComponent();
+
+                drawingBitmap = new Bitmap(panelWhiteboard.Width, panelWhiteboard.Height);
+                graphics = Graphics.FromImage(drawingBitmap);
+                graphics.Clear(Color.White);
+
+                panelWhiteboard.BackgroundImageLayout = ImageLayout.None;
+
+                ConnectToServer();
+                drawingBitmap.MakeTransparent(Color.White);
+                numericUpDownThickness.Minimum = 1;
+                numericUpDownThickness.Maximum = 10;
+                numericUpDownThickness.Value = 2;
+                numericUpDownThickness.ValueChanged += NumericUpDownThickness_ValueChanged;
+
+                panelWhiteboard.MouseDown += PanelWhiteboard_MouseDown;
+                panelWhiteboard.MouseMove += PanelWhiteboard_MouseMove;
+                panelWhiteboard.MouseUp += panelWhiteboard_MouseUp;
+
+                btnInsertImage.Click += btnInsertImage_Click;
+                btnChooseColor.Click += btnChooseColor_Click;
+
+                comboBoxDrawMode.Items.Add("Freehand");
+                comboBoxDrawMode.Items.Add("Rectangle");
+                comboBoxDrawMode.Items.Add("Ellipse");
+                comboBoxDrawMode.Items.Add("Line");
+                comboBoxDrawMode.SelectedIndex = 0;
+                comboBoxDrawMode.SelectedIndexChanged += ComboBoxDrawMode_SelectedIndexChanged;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Lỗi khởi tạo form: " + ex.Message, "Lỗi",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Environment.Exit(1);
             }
         }
         private void ConnectToServer()
@@ -120,9 +120,16 @@ namespace Client
                 listenThread.IsBackground = true;
                 listenThread.Start();
             }
+            catch (SocketException ex)
+            {
+                MessageBox.Show("Không thể kết nối đến server: " + ex.Message, "Lỗi kết nối",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Environment.Exit(0);
+            }
             catch (Exception ex)
             {
-                MessageBox.Show("Cannot connect to server: " + ex.Message);
+                MessageBox.Show("Lỗi kết nối: " + ex.Message, "Lỗi",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error);
                 Environment.Exit(0);
             }
         }
@@ -131,7 +138,7 @@ namespace Client
             byte[] buffer = new byte[4096];
             StringBuilder sb = new StringBuilder();
 
-            while (client != null && client.Connected)
+            while (client != null && client.Connected && !isDisconnecting)
             {
                 try
                 {
@@ -158,6 +165,10 @@ namespace Client
                     }
                     Thread.Sleep(10);
                 }
+                catch (ObjectDisposedException)
+                {
+                    break;
+                }
                 catch (IOException ex)
                 {
                     Console.WriteLine("IO Error: " + ex.Message);
@@ -170,110 +181,153 @@ namespace Client
                 }
             }
 
-            this.Invoke((MethodInvoker)delegate
+            if (!isDisconnecting)
             {
-                MessageBox.Show("Lost connection to server.");
-                Application.Exit();
-            });
+                try
+                {
+                    this.Invoke((MethodInvoker)delegate
+                    {
+                        MessageBox.Show("Mất kết nối đến server.", "Thông báo",
+                                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        Application.Exit();
+                    });
+                }
+                catch (ObjectDisposedException) { }
+                catch (InvalidOperationException) { }
+            }
         }
         private void ProcessDrawingMessage(string msg)
         {
-            if (msg.StartsWith("DRAW"))
+            try
             {
-                Console.WriteLine("[CLIENT] Received DRAW message: " + msg);
-
-                string[] parts = msg.Split(';');
-                if (parts.Length != 8) return; 
-
-                string shape = parts[1];
-
-                if (int.TryParse(parts[2], out int argb) &&
-                    float.TryParse(parts[3], out float thickness) &&
-                    int.TryParse(parts[4], out int x1) &&
-                    int.TryParse(parts[5], out int y1) &&
-                    int.TryParse(parts[6], out int x2) &&
-                    int.TryParse(parts[7], out int y2))
+                if (msg.StartsWith("DRAW"))
                 {
-                    Color c = Color.FromArgb(argb);
-                    Point p1 = new Point(x1, y1);
-                    Point p2 = new Point(x2, y2);
+                    Console.WriteLine("[CLIENT] Received DRAW message: " + msg);
 
-                    this.Invoke((MethodInvoker)delegate
+                    string[] parts = msg.Split(';');
+                    if (parts.Length != 8) return; 
+
+                    string shape = parts[1];
+
+                    if (int.TryParse(parts[2], out int argb) &&
+                        float.TryParse(parts[3], out float thickness) &&
+                        int.TryParse(parts[4], out int x1) &&
+                        int.TryParse(parts[5], out int y1) &&
+                        int.TryParse(parts[6], out int x2) &&
+                        int.TryParse(parts[7], out int y2))
                     {
-                        lock (drawingBitmap)
+                        Color c = Color.FromArgb(argb);
+
+                        if (x1 < 0 || y1 < 0 || x2 < 0 || y2 < 0 ||
+                            x1 > 5000 || y1 > 5000 || x2 > 5000 || y2 > 5000)
+                            return;
+
+                        Point p1 = new Point(x1, y1);
+                        Point p2 = new Point(x2, y2);
+
+                        this.Invoke((MethodInvoker)delegate
                         {
-                            using (Graphics g = Graphics.FromImage(drawingBitmap))
-                            using (Pen pen = new Pen(c, thickness))
-                            {
-                                switch (shape)
-                                {
-                                    case "Line":
-                                        g.DrawLine(pen, p1, p2);
-                                        break;
-                                    case "Rectangle":
-                                        g.DrawRectangle(pen, GetRectangleFromPoints(p1, p2));
-                                        break;
-                                    case "Ellipse":
-                                        g.DrawEllipse(pen, GetRectangleFromPoints(p1, p2));
-                                        break;
-                                    case "FreeHand":
-                                        g.DrawLine(pen, p1, p2); 
-                                        break;
-                                }
-                            }
-                            panelWhiteboard.Invalidate();
-                        }
-                    });
-                }
-            }
-            else if (msg.StartsWith("IMAGE"))
-            {
-                string[] parts = msg.Split(';');
-                if (parts.Length < 6) return;
-
-                if (int.TryParse(parts[1], out int x) &&
-                    int.TryParse(parts[2], out int y) &&
-                    int.TryParse(parts[3], out int w) &&
-                    int.TryParse(parts[4], out int h))
-                {
-                    string base64Image = parts[5];
-                    try
-                    {
-                        // Kiểm tra xem dữ liệu ảnh nhận về có phải là một ảnh mới hoàn toàn không
-                        bool isNewImage = (base64Image != currentImageBase64);
-
-                        byte[] imgBytes = Convert.FromBase64String(base64Image);
-                        using (MemoryStream ms = new MemoryStream(imgBytes))
-                        {
-                            Image img = Image.FromStream(ms);
-
-                            this.Invoke((MethodInvoker)delegate
+                            try
                             {
                                 lock (drawingBitmap)
                                 {
-                                    // Nếu phát hiện là ảnh mới VÀ đang có một ảnh cũ hiển thị:
-                                    // Hãy nướng ảnh cũ vào nền vẽ tĩnh của các Client khác trước khi ghi đè ảnh mới
-                                    if (isNewImage && currentImage != null && currentImageRect != Rectangle.Empty)
+                                    using (Graphics g = Graphics.FromImage(drawingBitmap))
+                                    using (Pen pen = new Pen(c, thickness))
                                     {
-                                        using (Graphics g = Graphics.FromImage(drawingBitmap))
+                                        switch (shape)
                                         {
-                                            g.DrawImage(currentImage, currentImageRect);
+                                            case "Line":
+                                                g.DrawLine(pen, p1, p2);
+                                                break;
+                                            case "Rectangle":
+                                                g.DrawRectangle(pen, GetRectangleFromPoints(p1, p2));
+                                                break;
+                                            case "Ellipse":
+                                                g.DrawEllipse(pen, GetRectangleFromPoints(p1, p2));
+                                                break;
+                                            case "FreeHand":
+                                                g.DrawLine(pen, p1, p2); 
+                                                break;
                                         }
                                     }
-
-                                    currentImage = img; // Cập nhật ảnh hoạt động mới
-                                    currentImageRect = new Rectangle(x, y, w, h); // Cập nhật vị trí mới
-                                    currentImageBase64 = base64Image; // Đồng bộ chuỗi Base64 đang quản lý
+                                    panelWhiteboard.Invalidate();
                                 }
-                                panelWhiteboard.Invalidate(); // Gọi cập nhật giao diện sạch sẽ
-                            });
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine("Error processing image: " + ex.Message);
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine("Error drawing on bitmap: " + ex.Message);
+                            }
+                        });
                     }
                 }
+                else if (msg.StartsWith("IMAGE"))
+                {
+                    string[] parts = msg.Split(';');
+                    if (parts.Length < 7) return;
+
+                    string id = parts[1];
+                    if (string.IsNullOrEmpty(id)) return;
+
+                    if (int.TryParse(parts[2], out int x) &&
+                        int.TryParse(parts[3], out int y) &&
+                        int.TryParse(parts[4], out int w) &&
+                        int.TryParse(parts[5], out int h))
+                    {
+                        if (w <= 0 || h <= 0 || w > 2000 || h > 2000) return;
+
+                        string base64Image = parts[6];
+                        if (string.IsNullOrEmpty(base64Image)) return;
+
+                        try
+                        {
+                            this.Invoke((MethodInvoker)delegate
+                            {
+                                try
+                                {
+                                    ImageItem existing = null;
+                                    foreach (var item in imageItems)
+                                    {
+                                        if (item.Id == id) { existing = item; break; }
+                                    }
+
+                                    if (existing != null)
+                                    {
+                                        existing.Rect = new Rectangle(x, y, w, h);
+                                    }
+                                    else
+                                    {
+                                        byte[] imgBytes = Convert.FromBase64String(base64Image);
+                                        using (MemoryStream ms = new MemoryStream(imgBytes))
+                                        {
+                                            Image img = Image.FromStream(ms);
+                                            var newItem = new ImageItem
+                                            {
+                                                Id = id,
+                                                Image = img,
+                                                Rect = new Rectangle(x, y, w, h),
+                                                Base64 = base64Image
+                                            };
+                                            imageItems.Add(newItem);
+                                        }
+                                    }
+                                    panelWhiteboard.Invalidate();
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine("Error processing image on UI thread: " + ex.Message);
+                                }
+                            });
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine("Error processing image: " + ex.Message);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("ProcessDrawingMessage error: " + ex.Message);
             }
         }
         private void SendMessage(string msg)
@@ -291,6 +345,14 @@ namespace Client
                     Console.WriteLine("Cannot send - connection not available");
                 }
             }
+            catch (ObjectDisposedException)
+            {
+                Console.WriteLine("Cannot send - connection disposed");
+            }
+            catch (IOException ex)
+            {
+                Console.WriteLine("Send IO error: " + ex.Message);
+            }
             catch (Exception ex)
             {
                 Console.WriteLine("Send error: " + ex.Message);
@@ -298,23 +360,45 @@ namespace Client
         }
         private void PanelWhiteboard_MouseDown(object sender, MouseEventArgs e)
         {
-            if (IsNearResizeHandle(e.Location))
+            try
             {
-                isResizingImage = true;
-                resizeStartPos = e.Location;
+                if (e == null) return;
+
+                selectedImageIndex = -1;
+                for (int i = imageItems.Count - 1; i >= 0; i--)
+                {
+                    if (imageItems[i].Rect.Contains(e.Location))
+                    {
+                        selectedImageIndex = i;
+                        break;
+                    }
+                }
+
+                if (selectedImageIndex >= 0 && IsNearResizeHandle(imageItems[selectedImageIndex].Rect, e.Location))
+                {
+                    isResizingImage = true;
+                    resizeStartPos = e.Location;
+                }
+                else if (selectedImageIndex >= 0)
+                {
+                    isMovingImage = true;
+                    mouseDownPos = e.Location;
+                    imageMoveStartPos = new Point(imageItems[selectedImageIndex].Rect.X, imageItems[selectedImageIndex].Rect.Y);
+                }
+                else if (e.Button == MouseButtons.Left)
+                {
+                    isDrawing = true;
+                    startPoint = e.Location;
+                    lastPoint = e.Location;
+                    currentPoint = e.Location;
+                }
             }
-            else if (currentImageRect.Contains(e.Location))
+            catch (Exception ex)
             {
-                isMovingImage = true;
-                mouseDownPos = e.Location;
-                imageMoveStartPos = new Point(currentImageRect.X, currentImageRect.Y);
-            }
-            else if (e.Button == MouseButtons.Left)
-            {
-                isDrawing = true;
-                startPoint = e.Location;   // điểm bắt đầu vẽ cho các kiểu
-                lastPoint = e.Location;    // dùng cho vẽ FreeHand
-                currentPoint = e.Location; // cập nhật điểm hiện tại cho vẽ tạm thời
+                Console.WriteLine("MouseDown error: " + ex.Message);
+                isMovingImage = false;
+                isResizingImage = false;
+                selectedImageIndex = -1;
             }
         }
         private string GetPicturesFolderPath()
@@ -324,19 +408,22 @@ namespace Client
                 string exePath = System.Reflection.Assembly.GetExecutingAssembly().Location;
 
                 string exeDirectory = Path.GetDirectoryName(exePath);
+                if (exeDirectory == null)
+                    throw new Exception("Không xác định được thư mục chứa ứng dụng");
 
                 DirectoryInfo dir = Directory.GetParent(exeDirectory); 
+                if (dir == null) throw new Exception("Không tìm thấy thư mục gốc dự án");
                 dir = Directory.GetParent(dir.FullName); 
+                if (dir == null) throw new Exception("Không tìm thấy thư mục gốc dự án");
                 dir = Directory.GetParent(dir.FullName);
+                if (dir == null) throw new Exception("Không tìm thấy thư mục gốc dự án");
                 dir = Directory.GetParent(dir.FullName); 
 
                 if (dir == null)
                     throw new Exception("Không tìm thấy thư mục gốc dự án");
 
-                // Kết hợp với thư mục Pictures
                 string picturesPath = Path.Combine(dir.FullName, "Pictures");
 
-                // Tạo thư mục nếu chưa tồn tại
                 if (!Directory.Exists(picturesPath))
                 {
                     Directory.CreateDirectory(picturesPath);
@@ -346,7 +433,10 @@ namespace Client
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Lỗi khi xác định thư mục lưu ảnh: {ex.Message}\nẢnh sẽ được lưu vào thư mục ứng dụng");
+                Console.WriteLine("GetPicturesFolderPath error: " + ex.Message);
+                MessageBox.Show("Lỗi khi xác định thư mục lưu ảnh: " + ex.Message +
+                                "\nẢnh sẽ được lưu vào thư mục ứng dụng", "Cảnh báo",
+                                MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return Application.StartupPath;
             }
         }
@@ -356,7 +446,6 @@ namespace Client
             {
                 string picturesPath = GetPicturesFolderPath();
 
-                // Đảm bảo thư mục tồn tại
                 if (!Directory.Exists(picturesPath))
                 {
                     Directory.CreateDirectory(picturesPath);
@@ -365,377 +454,614 @@ namespace Client
                 string fileName = $"Whiteboard_{DateTime.Now:yyyyMMdd_HHmmss}.png";
                 string fullPath = Path.Combine(picturesPath, fileName);
 
-                // Lưu ảnh
                 lock (drawingBitmap)
                 {
+                    if (drawingBitmap == null)
+                    {
+                        MessageBox.Show("Không có dữ liệu để lưu.", "Thông báo",
+                                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return;
+                    }
                     drawingBitmap.Save(fullPath, System.Drawing.Imaging.ImageFormat.Png);
                 }
 
-                // Hiển thị thông báo
-                MessageBox.Show($"Đã lưu ảnh thành công tại:\n{fullPath}", "Thông báo",
+                MessageBox.Show("Đã lưu ảnh thành công tại:\n" + fullPath, "Thông báo",
                                MessageBoxButtons.OK, MessageBoxIcon.Information);
 
-                // Mở thư mục chứa ảnh
-                System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{fullPath}\"");
+                try
+                {
+                    System.Diagnostics.Process.Start("explorer.exe", "/select,\"" + fullPath + "\"");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("Không thể mở explorer: " + ex.Message);
+                }
             }
             catch (UnauthorizedAccessException)
             {
                 MessageBox.Show("Lỗi: Không có quyền truy cập thư mục đích.", "Lỗi",
                                 MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+            catch (DirectoryNotFoundException ex)
+            {
+                MessageBox.Show("Lỗi: Không tìm thấy thư mục.\n" + ex.Message, "Lỗi",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            catch (IOException ex)
+            {
+                MessageBox.Show("Lỗi khi ghi file: " + ex.Message, "Lỗi",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
             catch (Exception ex)
             {
-                MessageBox.Show($"Lỗi khi lưu ảnh:\n{ex.Message}", "Lỗi",
+                MessageBox.Show("Lỗi khi lưu ảnh:\n" + ex.Message, "Lỗi",
                                 MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
         private void PanelWhiteboard_MouseMove(object sender, MouseEventArgs e)
         {
-            if (isDrawing)
+            try
             {
-                if (currentMode == DrawingMode.FreeHand)
+                if (e == null) return;
+
+                if (isDrawing)
                 {
-                    using (Graphics g = Graphics.FromImage(drawingBitmap))
+                    if (currentMode == DrawingMode.FreeHand)
                     {
-                        using (Pen pen = new Pen(currentColor, penThickness))
+                        using (Graphics g = Graphics.FromImage(drawingBitmap))
                         {
-                            g.DrawLine(pen, lastPoint, e.Location);
+                            using (Pen pen = new Pen(currentColor, penThickness))
+                            {
+                                g.DrawLine(pen, lastPoint, e.Location);
+                            }
                         }
+
+                        SendDrawCommand("FreeHand", lastPoint, e.Location, currentColor, penThickness);
+
+                        lastPoint = e.Location;
+                        panelWhiteboard.Invalidate();
                     }
-
-                    SendDrawCommand("FreeHand", lastPoint, e.Location, currentColor, penThickness);
-
-                    lastPoint = e.Location;
-                    panelWhiteboard.Invalidate();
+                    else
+                    {
+                        currentPoint = e.Location;
+                        panelWhiteboard.Invalidate();
+                    }
                 }
-                else
+                else if (isResizingImage && selectedImageIndex >= 0 && selectedImageIndex < imageItems.Count)
                 {
-                    currentPoint = e.Location;
-                    panelWhiteboard.Invalidate();
+                    int dx = e.X - resizeStartPos.X;
+                    int dy = e.Y - resizeStartPos.Y;
+                    var rect = imageItems[selectedImageIndex].Rect;
+                    rect.Width = Math.Max(20, rect.Width + dx);
+                    rect.Height = Math.Max(20, rect.Height + dy);
+                    imageItems[selectedImageIndex].Rect = rect;
+                    resizeStartPos = e.Location;
+                    RedrawWhiteboard();
+                }
+                else if (isMovingImage && selectedImageIndex >= 0 && selectedImageIndex < imageItems.Count)
+                {
+                    int dx = e.X - mouseDownPos.X;
+                    int dy = e.Y - mouseDownPos.Y;
+                    var rect = imageItems[selectedImageIndex].Rect;
+                    rect.X = imageMoveStartPos.X + dx;
+                    rect.Y = imageMoveStartPos.Y + dy;
+                    imageItems[selectedImageIndex].Rect = rect;
+                    RedrawWhiteboard();
                 }
             }
-            else if (isResizingImage)
+            catch (NullReferenceException ex)
             {
-                int dx = e.X - resizeStartPos.X;
-                int dy = e.Y - resizeStartPos.Y;
-                currentImageRect.Width = Math.Max(20, currentImageRect.Width + dx);
-                currentImageRect.Height = Math.Max(20, currentImageRect.Height + dy);
-                resizeStartPos = e.Location;
-                RedrawWhiteboard();
+                Console.WriteLine("MouseMove null reference: " + ex.Message);
             }
-            else if (isMovingImage)
+            catch (ArgumentOutOfRangeException ex)
             {
-                int dx = e.X - mouseDownPos.X;
-                int dy = e.Y - mouseDownPos.Y;
-                currentImageRect.X = imageMoveStartPos.X + dx;
-                currentImageRect.Y = imageMoveStartPos.Y + dy;
-                RedrawWhiteboard();
+                Console.WriteLine("MouseMove out of range: " + ex.Message);
             }
-
+            catch (Exception ex)
+            {
+                Console.WriteLine("MouseMove error: " + ex.Message);
+            }
         }
 
         private void SendDrawCommand(string shape, Point start, Point end, Color color, float thickness)
         {
-            string message = $"DRAW;{shape};{color.ToArgb()};{thickness};{start.X};{start.Y};{end.X};{end.Y}";
-            SendMessage(message);
+            try
+            {
+                string message = string.Format("DRAW;{0};{1};{2};{3};{4};{5};{6}",
+                    shape, color.ToArgb(), thickness,
+                    start.X, start.Y, end.X, end.Y);
+                SendMessage(message);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("SendDrawCommand error: " + ex.Message);
+            }
         }
         private void panelWhiteboard_MouseUp(object sender, MouseEventArgs e)
         {
-            if (isDrawing)
+            try
             {
-                isDrawing = false;
+                if (e == null) return;
 
-                if (currentMode != DrawingMode.FreeHand)
+                if (isDrawing)
                 {
-                    using (Graphics g = Graphics.FromImage(drawingBitmap))
-                    using (Pen pen = new Pen(currentColor, penThickness))
+                    isDrawing = false;
+
+                    if (currentMode != DrawingMode.FreeHand)
                     {
-                        switch (currentMode)
+                        using (Graphics g = Graphics.FromImage(drawingBitmap))
+                        using (Pen pen = new Pen(currentColor, penThickness))
                         {
-                            case DrawingMode.Line:
-                                g.DrawLine(pen, startPoint, e.Location);
-                                break;
-                            case DrawingMode.Rectangle:
-                                g.DrawRectangle(pen, GetRectangleFromPoints(startPoint, e.Location));
-                                break;
-                            case DrawingMode.Ellipse:
-                                g.DrawEllipse(pen, GetRectangleFromPoints(startPoint, e.Location));
-                                break;
+                            switch (currentMode)
+                            {
+                                case DrawingMode.Line:
+                                    g.DrawLine(pen, startPoint, e.Location);
+                                    break;
+                                case DrawingMode.Rectangle:
+                                    g.DrawRectangle(pen, GetRectangleFromPoints(startPoint, e.Location));
+                                    break;
+                                case DrawingMode.Ellipse:
+                                    g.DrawEllipse(pen, GetRectangleFromPoints(startPoint, e.Location));
+                                    break;
+                            }
                         }
+
+                        SendDrawCommand(currentMode.ToString(), startPoint, e.Location, currentColor, penThickness);
+                        panelWhiteboard.Invalidate();
                     }
-
-                    SendDrawCommand(currentMode.ToString(), startPoint, e.Location, currentColor, penThickness);
-                    panelWhiteboard.Invalidate();
                 }
-            }
 
-            if (isResizingImage || isMovingImage)
+                if ((isResizingImage || isMovingImage) && selectedImageIndex >= 0 && selectedImageIndex < imageItems.Count)
+                {
+                    var item = imageItems[selectedImageIndex];
+                    string msg = string.Format("IMAGE;{0};{1};{2};{3};{4};{5}",
+                        item.Id, item.Rect.X, item.Rect.Y, item.Rect.Width, item.Rect.Height, item.Base64);
+                    SendMessage(msg);
+                }
+
+                isResizingImage = false;
+                isMovingImage = false;
+                selectedImageIndex = -1;
+            }
+            catch (Exception ex)
             {
-                SendCurrentImagePosition();
+                Console.WriteLine("MouseUp error: " + ex.Message);
+                isResizingImage = false;
+                isMovingImage = false;
+                selectedImageIndex = -1;
             }
-
-            isResizingImage = false;
-            isMovingImage = false;
         }
-        private bool IsNearResizeHandle(Point pt)
+        private bool IsNearResizeHandle(Rectangle rect, Point pt)
         {
-            Rectangle handle = new Rectangle(
-                currentImageRect.Right - resizeHandleSize,
-                currentImageRect.Bottom - resizeHandleSize,
-                resizeHandleSize, resizeHandleSize);
-            return handle.Contains(pt);
+            try
+            {
+                Rectangle handle = new Rectangle(
+                    rect.Right - resizeHandleSize,
+                    rect.Bottom - resizeHandleSize,
+                    resizeHandleSize, resizeHandleSize);
+                return handle.Contains(pt);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("IsNearResizeHandle error: " + ex.Message);
+                return false;
+            }
         }
 
         private async void btnInsertImage_Click(object sender, EventArgs e)
         {
-            string url = txtImageUrl.Text.Trim();
-            if (string.IsNullOrEmpty(url))
-            {
-                MessageBox.Show("Vui lòng nhập URL ảnh");
-                return;
-            }
-
             try
             {
-                Image img = await LoadImageFromUrl(url);
-                if (img == null)
+                string url = txtImageUrl.Text.Trim();
+                if (string.IsNullOrEmpty(url))
                 {
-                    MessageBox.Show("Không tải được ảnh từ URL");
+                    MessageBox.Show("Vui lòng nhập URL ảnh", "Thông báo",
+                                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
 
-                // ================== THÊM ĐOẠN CODE NÀY VÀO ĐÂY ==================
-                // Nếu đã có ảnh trước đó, nướng cố định ảnh đó vào nền vẽ tĩnh trước khi nạp ảnh mới
-                if (currentImage != null && currentImageRect != Rectangle.Empty)
+                if (!Uri.TryCreate(url, UriKind.Absolute, out Uri uri) ||
+                    (uri.Scheme != "http" && uri.Scheme != "https"))
                 {
-                    lock (drawingBitmap)
-                    {
-                        using (Graphics g = Graphics.FromImage(drawingBitmap))
-                        {
-                            g.DrawImage(currentImage, currentImageRect);
-                        }
-                    }
+                    MessageBox.Show("URL không hợp lệ. Vui lòng nhập URL http hoặc https.", "Lỗi",
+                                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
                 }
-                // ===============================================================
+
+                btnInsertImage.Enabled = false;
+                btnInsertImage.Text = "Đang tải...";
+
+                Image img = await LoadImageFromUrl(url);
+                if (img == null)
+                {
+                    MessageBox.Show("Không tải được ảnh từ URL", "Lỗi",
+                                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    btnInsertImage.Enabled = true;
+                    btnInsertImage.Text = "INSERT";
+                    return;
+                }
 
                 Size newSize = ResizeToFit(img.Size, MaxImageWidth, MaxImageHeight);
                 Bitmap resizedImage = new Bitmap(img, newSize);
-                currentImage = resizedImage;
-                currentImageRect = new Rectangle(50, 50, resizedImage.Width, resizedImage.Height);
+
+                string base64;
+                using (MemoryStream ms = new MemoryStream())
+                {
+                    resizedImage.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                    base64 = Convert.ToBase64String(ms.ToArray());
+                }
+
+                var item = new ImageItem
+                {
+                    Id = Guid.NewGuid().ToString(),
+                    Image = resizedImage,
+                    Rect = new Rectangle(50, 50, resizedImage.Width, resizedImage.Height),
+                    Base64 = base64
+                };
+
+                imageItems.Add(item);
 
                 RedrawWhiteboard();
-                SendCurrentImagePosition();
+                SendMessage(string.Format("IMAGE;{0};{1};{2};{3};{4};{5}",
+                    item.Id, item.Rect.X, item.Rect.Y, item.Rect.Width, item.Rect.Height, item.Base64));
+
+                btnInsertImage.Enabled = true;
+                btnInsertImage.Text = "INSERT";
+            }
+            catch (HttpRequestException ex)
+            {
+                MessageBox.Show("Lỗi mạng khi tải ảnh: " + ex.Message, "Lỗi",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error);
+                btnInsertImage.Enabled = true;
+                btnInsertImage.Text = "INSERT";
+            }
+            catch (TaskCanceledException)
+            {
+                MessageBox.Show("Quá thời gian chờ tải ảnh.", "Lỗi",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error);
+                btnInsertImage.Enabled = true;
+                btnInsertImage.Text = "INSERT";
+            }
+            catch (OutOfMemoryException)
+            {
+                MessageBox.Show("Ảnh quá lớn, không thể xử lý.", "Lỗi",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error);
+                btnInsertImage.Enabled = true;
+                btnInsertImage.Text = "INSERT";
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Lỗi tải ảnh: " + ex.Message);
+                MessageBox.Show("Lỗi tải ảnh: " + ex.Message, "Lỗi",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error);
+                btnInsertImage.Enabled = true;
+                btnInsertImage.Text = "INSERT";
             }
         }
 
         private Size ResizeToFit(Size original, int maxWidth, int maxHeight)
         {
-            float ratioX = (float)maxWidth / original.Width;
-            float ratioY = (float)maxHeight / original.Height;
-            float ratio = Math.Min(ratioX, ratioY);
-            return new Size((int)(original.Width * ratio), (int)(original.Height * ratio));
+            try
+            {
+                if (original.Width <= 0 || original.Height <= 0)
+                    return new Size(maxWidth, maxHeight);
+
+                if (original.Width <= maxWidth && original.Height <= maxHeight)
+                    return original;
+
+                float ratioX = (float)maxWidth / original.Width;
+                float ratioY = (float)maxHeight / original.Height;
+                float ratio = Math.Min(ratioX, ratioY);
+                return new Size((int)(original.Width * ratio), (int)(original.Height * ratio));
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("ResizeToFit error: " + ex.Message);
+                return new Size(maxWidth, maxHeight);
+            }
         }
 
         private async Task<Image> LoadImageFromUrl(string url)
         {
-            using (HttpClient http = new HttpClient())
+            HttpClient http = null;
+            try
             {
+                http = new HttpClient();
+                http.Timeout = TimeSpan.FromSeconds(15);
+
                 var response = await http.GetAsync(url);
-                if (!response.IsSuccessStatusCode) return null;
+                if (!response.IsSuccessStatusCode)
+                {
+                    Console.WriteLine("HTTP error: " + response.StatusCode);
+                    return null;
+                }
+
                 using (var stream = await response.Content.ReadAsStreamAsync())
                 {
                     return Image.FromStream(stream);
                 }
             }
+            catch (HttpRequestException ex)
+            {
+                Console.WriteLine("HTTP request error: " + ex.Message);
+                return null;
+            }
+            catch (TaskCanceledException)
+            {
+                Console.WriteLine("Request timed out");
+                return null;
+            }
+            catch (ArgumentException ex)
+            {
+                Console.WriteLine("Invalid image data: " + ex.Message);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("LoadImage error: " + ex.Message);
+                return null;
+            }
+            finally
+            {
+                if (http != null)
+                    http.Dispose();
+            }
         }
 
         private void RedrawWhiteboard()
         {
-            
-            panelWhiteboard.Invalidate();
-        }
-
-        private void SendCurrentImagePosition()
-        {
-            if (currentImage == null || currentImageRect == Rectangle.Empty) return;
-
             try
             {
-                string base64;
-                using (MemoryStream ms = new MemoryStream())
+                if (panelWhiteboard.IsHandleCreated && !panelWhiteboard.IsDisposed)
                 {
-                    if (currentImage is Bitmap bmp)
-                    {
-                        bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
-                    }
-                    else
-                    {
-                        using (Bitmap temp = new Bitmap(currentImage))
-                        {
-                            temp.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
-                        }
-                    }
-                    base64 = Convert.ToBase64String(ms.ToArray());
+                    panelWhiteboard.Invalidate();
                 }
-
-                currentImageBase64 = base64; // THÊM DÒNG NÀY: Lưu lại dữ liệu của chính mình vừa gửi
-
-                string msg = $"IMAGE;{currentImageRect.X};{currentImageRect.Y};{currentImageRect.Width};{currentImageRect.Height};{base64}";
-                SendMessage(msg);
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Error sending image: " + ex.Message);
+                Console.WriteLine("RedrawWhiteboard error: " + ex.Message);
             }
         }
+
         private void NumericUpDownThickness_ValueChanged(object sender, EventArgs e)
         {
-            penThickness = (int)numericUpDownThickness.Value;
+            try
+            {
+                penThickness = (int)numericUpDownThickness.Value;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Thickness change error: " + ex.Message);
+            }
         }
 
         private void btnChooseColor_Click(object sender, EventArgs e)
         {
-            ColorDialog dlg = new ColorDialog();
-            if (dlg.ShowDialog() == DialogResult.OK)
+            try
             {
-                currentColor = dlg.Color;
+                using (ColorDialog dlg = new ColorDialog())
+                {
+                    dlg.Color = currentColor;
+                    if (dlg.ShowDialog() == DialogResult.OK)
+                    {
+                        currentColor = dlg.Color;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Color dialog error: " + ex.Message);
             }
         }
 
         private void buttonEnd_Click(object sender, EventArgs e)
         {
-            SaveWhiteboardImage();
-
             try
             {
+                isDisconnecting = true;
+                SaveWhiteboardImage();
+
                 if (client != null && client.Connected)
                 {
-                    SendMessage("DISCONNECT");
-                    client.Close();
+                    try
+                    {
+                        SendMessage("DISCONNECT");
+                    }
+                    catch { }
+                    try
+                    {
+                        client.Close();
+                    }
+                    catch { }
+                }
+
+                if (stream != null)
+                {
+                    try { stream.Close(); }
+                    catch { }
                 }
             }
-            catch { }
-
-            Application.Exit();
+            catch (Exception ex)
+            {
+                Console.WriteLine("End error: " + ex.Message);
+            }
+            finally
+            {
+                Application.Exit();
+            }
         }
 
         private void btnIncreaseThickness_Click(object sender, EventArgs e)
         {
-            if (penThickness < numericUpDownThickness.Maximum)
+            try
             {
-                penThickness++;
-                numericUpDownThickness.Value = penThickness;  
+                if (penThickness < numericUpDownThickness.Maximum)
+                {
+                    penThickness++;
+                    numericUpDownThickness.Value = penThickness;  
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Increase thickness error: " + ex.Message);
             }
         }
 
         private void btnDecreaseThickness_Click(object sender, EventArgs e)
         {
-            if (penThickness > numericUpDownThickness.Minimum)
+            try
             {
-                penThickness--;
-                numericUpDownThickness.Value = penThickness;  
+                if (penThickness > numericUpDownThickness.Minimum)
+                {
+                    penThickness--;
+                    numericUpDownThickness.Value = penThickness;  
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Decrease thickness error: " + ex.Message);
             }
         }
 
         private void panelWhiteboard_Paint(object sender, PaintEventArgs e)
         {
-            lock (drawingBitmap)
+            try
             {
-                // 1. XÓA TRẮNG GIAO DIỆN TRƯỚC
-                e.Graphics.Clear(Color.White);
+                if (e == null || e.Graphics == null) return;
 
-                // 2. VẼ HÌNH ẢNH XUỐNG DƯỚI CÙNG (LỚP NỀN)
-                if (currentImage != null && currentImageRect != Rectangle.Empty)
+                lock (drawingBitmap)
                 {
-                    e.Graphics.DrawImage(currentImage, currentImageRect);
+                    e.Graphics.Clear(Color.White);
 
-                    // Vẽ nút vuông nhỏ màu xám để kéo giãn kích thước ảnh
-                    e.Graphics.FillRectangle(Brushes.Gray,
-                        currentImageRect.Right - resizeHandleSize,
-                        currentImageRect.Bottom - resizeHandleSize,
-                        resizeHandleSize, resizeHandleSize);
-                }
-
-                // 3. VẼ TẤM NỀN NÉT VẼ ĐÈ LÊN TRÊN ẢNH (LỚP GIỮA)
-                // Để nét vẽ không bị nền trắng của drawingBitmap che mất ảnh, ta vẽ không dùng Unscaled đè clear
-                e.Graphics.DrawImageUnscaled(drawingBitmap, Point.Empty);
-
-                // 4. VẼ HÌNH KHỐI TẠM THỜI KHI ĐANG KÉO CHUỘT (LỚP TRÊN CÙNG)
-                if (isDrawing && currentMode != DrawingMode.FreeHand)
-                {
-                    using (Pen pen = new Pen(currentColor, penThickness))
+                    foreach (var item in imageItems)
                     {
-                        Rectangle rect = GetRectangleFromPoints(startPoint, currentPoint);
-                        switch (currentMode)
+                        try
                         {
-                            case DrawingMode.Line:
-                                e.Graphics.DrawLine(pen, startPoint, currentPoint);
-                                break;
-                            case DrawingMode.Rectangle:
-                                e.Graphics.DrawRectangle(pen, rect);
-                                break;
-                            case DrawingMode.Ellipse:
-                                e.Graphics.DrawEllipse(pen, rect);
-                                break;
+                            if (item != null && item.Image != null)
+                            {
+                                e.Graphics.DrawImage(item.Image, item.Rect);
+
+                                e.Graphics.FillRectangle(Brushes.Gray,
+                                    item.Rect.Right - resizeHandleSize,
+                                    item.Rect.Bottom - resizeHandleSize,
+                                    resizeHandleSize, resizeHandleSize);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine("Paint image item error: " + ex.Message);
+                        }
+                    }
+
+                    try
+                    {
+                        e.Graphics.DrawImageUnscaled(drawingBitmap, Point.Empty);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine("Paint bitmap error: " + ex.Message);
+                    }
+
+                    if (isDrawing && currentMode != DrawingMode.FreeHand)
+                    {
+                        using (Pen pen = new Pen(currentColor, penThickness))
+                        {
+                            Rectangle rect = GetRectangleFromPoints(startPoint, currentPoint);
+                            switch (currentMode)
+                            {
+                                case DrawingMode.Line:
+                                    e.Graphics.DrawLine(pen, startPoint, currentPoint);
+                                    break;
+                                case DrawingMode.Rectangle:
+                                    e.Graphics.DrawRectangle(pen, rect);
+                                    break;
+                                case DrawingMode.Ellipse:
+                                    e.Graphics.DrawEllipse(pen, rect);
+                                    break;
+                            }
                         }
                     }
                 }
             }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Paint error: " + ex.Message);
+            }
         }
         private void ClientForm_Load(object sender, EventArgs e)
         {
-            comboBoxDrawMode.Items.Clear();
+            try
+            {
+                comboBoxDrawMode.Items.Clear();
 
-            comboBoxDrawMode.Items.Add("FreeHand");
-            comboBoxDrawMode.Items.Add("Line");
-            comboBoxDrawMode.Items.Add("Rectangle");
-            comboBoxDrawMode.Items.Add("Ellipse");
+                comboBoxDrawMode.Items.Add("FreeHand");
+                comboBoxDrawMode.Items.Add("Line");
+                comboBoxDrawMode.Items.Add("Rectangle");
+                comboBoxDrawMode.Items.Add("Ellipse");
 
-            comboBoxDrawMode.SelectedIndex = 0;
+                comboBoxDrawMode.SelectedIndex = 0;
 
-            panelWhiteboard.Paint += panelWhiteboard_Paint;
+                panelWhiteboard.Paint += panelWhiteboard_Paint;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Form Load error: " + ex.Message);
+            }
         }
 
         private void ComboBoxDrawMode_SelectedIndexChanged(object sender, EventArgs e)
         {
-            string selectedMode = comboBoxDrawMode.SelectedItem.ToString();
-
-            switch (selectedMode)
+            try
             {
-                case "FreeHand":
-                    currentMode = DrawingMode.FreeHand;
-                    break;
-                case "Line":
-                    currentMode = DrawingMode.Line;
-                    break;
-                case "Rectangle":
-                    currentMode = DrawingMode.Rectangle;
-                    break;
-                case "Ellipse":
-                    currentMode = DrawingMode.Ellipse;
-                    break;
-                default:
-                    currentMode = DrawingMode.FreeHand;
-                    break;
+                if (comboBoxDrawMode.SelectedItem == null) return;
+
+                string selectedMode = comboBoxDrawMode.SelectedItem.ToString();
+                if (string.IsNullOrEmpty(selectedMode)) return;
+
+                switch (selectedMode)
+                {
+                    case "FreeHand":
+                        currentMode = DrawingMode.FreeHand;
+                        break;
+                    case "Line":
+                        currentMode = DrawingMode.Line;
+                        break;
+                    case "Rectangle":
+                        currentMode = DrawingMode.Rectangle;
+                        break;
+                    case "Ellipse":
+                        currentMode = DrawingMode.Ellipse;
+                        break;
+                    default:
+                        currentMode = DrawingMode.FreeHand;
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("ComboBox change error: " + ex.Message);
+                currentMode = DrawingMode.FreeHand;
             }
         }
 
         private void chkEraser_CheckedChanged(object sender, EventArgs e)
         {
-            if (chkEraser.Checked)
+            try
             {
-                previousColor = currentColor;  
-                currentColor = Color.White;   
-                currentMode = DrawingMode.FreeHand; 
+                if (chkEraser.Checked)
+                {
+                    previousColor = currentColor;  
+                    currentColor = Color.White;   
+                    currentMode = DrawingMode.FreeHand; 
+                }
+                else
+                {
+                    currentColor = previousColor; 
+                }
             }
-            else
+            catch (Exception ex)
             {
-                currentColor = previousColor; 
-            }   
+                Console.WriteLine("Eraser error: " + ex.Message);
+            }
         }
     }
 }
