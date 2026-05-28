@@ -1,11 +1,11 @@
 using System;
 using System.Drawing;
 using System.IO;
+using System.Runtime.Serialization;
 using System.Runtime.Serialization.Formatters.Binary;
 
-namespace WhiteboardServer
+namespace WhiteboardProtocol
 {
-    // Message types for communication
     public enum MessageType
     {
         DrawLine,
@@ -18,13 +18,11 @@ namespace WhiteboardServer
         Erase
     }
 
-    // Base message class
     [Serializable]
     public class WhiteboardMessage
     {
         public MessageType Type { get; set; }
         public byte[] Data { get; set; }
-
         public WhiteboardMessage(MessageType type, byte[] data = null)
         {
             Type = type;
@@ -32,7 +30,6 @@ namespace WhiteboardServer
         }
     }
 
-    // Drawing data
     [Serializable]
     public class DrawData
     {
@@ -44,18 +41,10 @@ namespace WhiteboardServer
         public float Thickness { get; set; }
         public bool IsEraser { get; set; }
 
-        public Color GetColor()
-        {
-            return Color.FromArgb(ColorArgb);
-        }
-
-        public void SetColor(Color color)
-        {
-            ColorArgb = color.ToArgb();
-        }
+        public Color GetColor() => Color.FromArgb(ColorArgb);
+        public void SetColor(Color color) => ColorArgb = color.ToArgb();
     }
 
-    // Image insertion data
     [Serializable]
     public class ImageData
     {
@@ -66,7 +55,6 @@ namespace WhiteboardServer
         public int Height { get; set; }
     }
 
-    // Sync data containing all drawing history
     [Serializable]
     public class SyncData
     {
@@ -74,15 +62,27 @@ namespace WhiteboardServer
         public ImageData[] ImageHistory { get; set; }
     }
 
-    // Serialization helper
+    public sealed class WhiteboardBinder : SerializationBinder
+    {
+        public override Type BindToType(string assemblyName, string typeName)
+        {
+            // Resolve type regardless of which assembly (server or client) serialized it
+            string currentAsm = typeof(WhiteboardBinder).Assembly.FullName;
+            Type type = Type.GetType($"{typeName}, {currentAsm}");
+            if (type != null) return type;
+            return Type.GetType(typeName);
+        }
+    }
+
     public static class MessageSerializer
     {
+        private static readonly WhiteboardBinder Binder = new WhiteboardBinder();
+
         public static byte[] Serialize(object obj)
         {
             if (obj == null) return null;
-            
-            BinaryFormatter formatter = new BinaryFormatter();
-            using (MemoryStream ms = new MemoryStream())
+            var formatter = new BinaryFormatter();
+            using (var ms = new MemoryStream())
             {
                 formatter.Serialize(ms, obj);
                 return ms.ToArray();
@@ -92,9 +92,9 @@ namespace WhiteboardServer
         public static T Deserialize<T>(byte[] data)
         {
             if (data == null) return default(T);
-            
-            BinaryFormatter formatter = new BinaryFormatter();
-            using (MemoryStream ms = new MemoryStream(data))
+            var formatter = new BinaryFormatter();
+            formatter.Binder = Binder;
+            using (var ms = new MemoryStream(data))
             {
                 return (T)formatter.Deserialize(ms);
             }

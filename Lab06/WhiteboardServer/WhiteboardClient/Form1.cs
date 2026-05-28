@@ -6,6 +6,7 @@ using System.Windows.Forms;
 using System.Net.Sockets;
 using System.IO;
 using System.Threading;
+using WhiteboardProtocol;
 
 namespace WhiteboardClient
 {

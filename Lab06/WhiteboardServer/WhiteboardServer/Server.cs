@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Net.Mail;
 using System.Threading;
+using WhiteboardProtocol;
 
 namespace WhiteboardServer
 {
