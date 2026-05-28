@@ -468,7 +468,7 @@ namespace WhiteboardClient
             SendMessage(MessageType.End, null);
 
             // Start a timer - if server doesn't respond in 3s, save and exit anyway
-            Timer timeout = new Timer();
+            System.Windows.Forms.Timer timeout = new System.Windows.Forms.Timer();
             timeout.Interval = 3000;
             timeout.Tick += (s, args) =>
             {
