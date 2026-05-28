@@ -1,11 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
 using System.Drawing;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+using System.Drawing.Drawing2D;
 using System.Windows.Forms;
 using System.Net;
 using System.Net.Sockets;
@@ -28,13 +24,16 @@ namespace WhiteboardServer
         private Graphics whiteboardGraphics;
         private Point lastPoint;
         private bool isDrawing = false;
-        private Color currentColor = Color.Black;
-        private float currentThickness = 2.0f;
+        private Color currentColor = Color.FromArgb(52, 73, 94);
+        private float currentThickness = 3.0f;
         private bool isEraser = false;
+        private bool isServerRunning = false;
+        private bool isEnding = false;
 
         public Form1()
         {
             InitializeComponent();
+            this.DoubleBuffered = true;
             InitializeWhiteboard();
             StartServer();
         }
@@ -53,8 +52,9 @@ namespace WhiteboardServer
             {
                 server = new TcpListener(IPAddress.Any, 8888);
                 server.Start();
-                labelStatus.Text = "Server started on port 8888";
-                
+                isServerRunning = true;
+                UpdateStatus("Server running on port 8888", StatusType.Running);
+
                 Thread acceptThread = new Thread(AcceptClients);
                 acceptThread.IsBackground = true;
                 acceptThread.Start();
@@ -65,20 +65,38 @@ namespace WhiteboardServer
             }
         }
 
+        private enum StatusType { Running, Info, Warning, Error }
+
+        private void UpdateStatus(string text, StatusType type = StatusType.Info)
+        {
+            if (labelStatus.InvokeRequired)
+            {
+                labelStatus.Invoke((MethodInvoker)delegate { UpdateStatus(text, type); });
+                return;
+            }
+            labelStatus.Text = text;
+            switch (type)
+            {
+                case StatusType.Running: labelStatus.ForeColor = Color.FromArgb(39, 174, 96); break;
+                case StatusType.Info: labelStatus.ForeColor = Color.FromArgb(52, 73, 94); break;
+                case StatusType.Warning: labelStatus.ForeColor = Color.FromArgb(243, 156, 18); break;
+                case StatusType.Error: labelStatus.ForeColor = Color.FromArgb(231, 76, 60); break;
+            }
+        }
+
         private void AcceptClients()
         {
-            while (true)
+            while (isServerRunning)
             {
                 try
                 {
                     TcpClient client = server.AcceptTcpClient();
-                    
+
                     lock (lockObj)
                     {
                         clients.Add(client);
-                        UpdateClientCount();
-                        
-                        // Check if limit reached and send email
+                        UpdateClientCountUI();
+
                         if (clients.Count >= MAX_CLIENTS && !emailSent)
                         {
                             SendEmailAlert();
@@ -86,56 +104,49 @@ namespace WhiteboardServer
                         }
                     }
 
-                    // Send current whiteboard state to new client
                     SendSyncData(client);
 
-                    // Start handling this client
                     Thread clientThread = new Thread(() => HandleClient(client));
                     clientThread.IsBackground = true;
                     clientThread.Start();
                 }
+                catch (ObjectDisposedException)
+                {
+                    break;
+                }
                 catch (Exception ex)
                 {
-                    Console.WriteLine("Error accepting client: " + ex.Message);
+                    Console.WriteLine("Accept error: " + ex.Message);
                 }
             }
         }
 
         private void HandleClient(TcpClient client)
         {
-            NetworkStream stream = client.GetStream();
-            
+            NetworkStream stream = null;
             try
             {
-                while (client.Connected)
+                stream = client.GetStream();
+                byte[] typeBuffer = new byte[4];
+
+                while (client.Connected && isServerRunning)
                 {
-                    // Read message type
-                    byte[] typeBuffer = new byte[4];
-                    int bytesRead = stream.Read(typeBuffer, 0, 4);
+                    int bytesRead = ReadFully(stream, typeBuffer, 0, 4);
                     if (bytesRead == 0) break;
-                    
+
                     MessageType msgType = (MessageType)BitConverter.ToInt32(typeBuffer, 0);
-                    
-                    // Read data length
+
                     byte[] lengthBuffer = new byte[4];
-                    stream.Read(lengthBuffer, 0, 4);
+                    if (ReadFully(stream, lengthBuffer, 0, 4) == 0) break;
                     int dataLength = BitConverter.ToInt32(lengthBuffer, 0);
-                    
-                    // Read data
+
                     byte[] data = null;
                     if (dataLength > 0)
                     {
                         data = new byte[dataLength];
-                        int totalRead = 0;
-                        while (totalRead < dataLength)
-                        {
-                            int read = stream.Read(data, totalRead, dataLength - totalRead);
-                            if (read == 0) break;
-                            totalRead += read;
-                        }
+                        if (ReadFully(stream, data, 0, dataLength) == 0) break;
                     }
-                    
-                    // Process message
+
                     ProcessMessage(msgType, data, client);
                 }
             }
@@ -148,10 +159,22 @@ namespace WhiteboardServer
                 lock (lockObj)
                 {
                     clients.Remove(client);
-                    UpdateClientCount();
+                    UpdateClientCountUI();
                 }
                 client.Close();
             }
+        }
+
+        private int ReadFully(NetworkStream stream, byte[] buffer, int offset, int size)
+        {
+            int totalRead = 0;
+            while (totalRead < size)
+            {
+                int read = stream.Read(buffer, offset + totalRead, size - totalRead);
+                if (read == 0) return totalRead;
+                totalRead += read;
+            }
+            return totalRead;
         }
 
         private void ProcessMessage(MessageType type, byte[] data, TcpClient sender)
@@ -160,97 +183,75 @@ namespace WhiteboardServer
             {
                 case MessageType.DrawLine:
                     DrawData drawData = MessageSerializer.Deserialize<DrawData>(data);
-                    lock (lockObj)
-                    {
-                        drawHistory.Add(drawData);
-                    }
-                    DrawOnWhiteboard(drawData);
+                    lock (lockObj) { drawHistory.Add(drawData); }
+                    DrawOnWhiteboardSafe(drawData);
                     BroadcastMessage(type, data, sender);
                     break;
-                    
+
                 case MessageType.InsertImage:
                     ImageData imageData = MessageSerializer.Deserialize<ImageData>(data);
-                    lock (lockObj)
-                    {
-                        imageHistory.Add(imageData);
-                    }
-                    DrawImageOnWhiteboard(imageData);
+                    lock (lockObj) { imageHistory.Add(imageData); }
+                    DrawImageOnWhiteboardSafe(imageData);
                     BroadcastMessage(type, data, sender);
                     break;
-                    
+
                 case MessageType.Clear:
-                    lock (lockObj)
-                    {
-                        drawHistory.Clear();
-                        imageHistory.Clear();
-                    }
-                    ClearWhiteboard();
+                    lock (lockObj) { drawHistory.Clear(); imageHistory.Clear(); }
+                    ClearWhiteboardSafe();
                     BroadcastMessage(type, data, sender);
                     break;
-                    
+
                 case MessageType.End:
-                    SaveWhiteboardImage();
-                    BroadcastMessage(type, data, null);
-                    this.Invoke((MethodInvoker)delegate {
-                        Application.Exit();
-                    });
+                    isEnding = true;
+                    SaveWhiteboardImageSafe();
+                    BroadcastMessage(MessageType.End, null, null);
+                    this.Invoke((MethodInvoker)delegate { Application.Exit(); });
                     break;
-                    
+
                 case MessageType.RequestSync:
                     SendSyncData(sender);
                     break;
             }
         }
 
-        private void DrawOnWhiteboard(DrawData data)
+        private void DrawOnWhiteboardSafe(DrawData data)
         {
             if (pictureBoxWhiteboard.InvokeRequired)
             {
-                pictureBoxWhiteboard.Invoke((MethodInvoker)delegate {
-                    DrawOnWhiteboard(data);
-                });
+                pictureBoxWhiteboard.Invoke((MethodInvoker)delegate { DrawOnWhiteboardSafe(data); });
                 return;
             }
-
-            using (Pen pen = new Pen(data.GetColor(), data.Thickness))
+            using (Pen pen = new Pen(data.IsEraser ? Color.White : data.GetColor(), data.Thickness))
             {
-                if (data.IsEraser)
-                {
-                    pen.Color = Color.White;
-                }
+                pen.StartCap = LineCap.Round;
+                pen.EndCap = LineCap.Round;
                 whiteboardGraphics.DrawLine(pen, data.X1, data.Y1, data.X2, data.Y2);
             }
             pictureBoxWhiteboard.Refresh();
         }
 
-        private void DrawImageOnWhiteboard(ImageData data)
+        private void DrawImageOnWhiteboardSafe(ImageData data)
         {
             if (pictureBoxWhiteboard.InvokeRequired)
             {
-                pictureBoxWhiteboard.Invoke((MethodInvoker)delegate {
-                    DrawImageOnWhiteboard(data);
-                });
+                pictureBoxWhiteboard.Invoke((MethodInvoker)delegate { DrawImageOnWhiteboardSafe(data); });
                 return;
             }
-
             using (MemoryStream ms = new MemoryStream(data.ImageBytes))
+            using (Image img = Image.FromStream(ms))
             {
-                Image img = Image.FromStream(ms);
                 whiteboardGraphics.DrawImage(img, data.X, data.Y, data.Width, data.Height);
             }
             pictureBoxWhiteboard.Refresh();
         }
 
-        private void ClearWhiteboard()
+        private void ClearWhiteboardSafe()
         {
             if (pictureBoxWhiteboard.InvokeRequired)
             {
-                pictureBoxWhiteboard.Invoke((MethodInvoker)delegate {
-                    ClearWhiteboard();
-                });
+                pictureBoxWhiteboard.Invoke((MethodInvoker)delegate { ClearWhiteboardSafe(); });
                 return;
             }
-
             whiteboardGraphics.Clear(Color.White);
             pictureBoxWhiteboard.Refresh();
         }
@@ -259,301 +260,315 @@ namespace WhiteboardServer
         {
             byte[] typeBytes = BitConverter.GetBytes((int)type);
             byte[] lengthBytes = BitConverter.GetBytes(data?.Length ?? 0);
-            
+
             lock (lockObj)
             {
                 List<TcpClient> disconnected = new List<TcpClient>();
-                
                 foreach (TcpClient client in clients)
                 {
                     if (client == excludeClient) continue;
-                    
                     try
                     {
-                        NetworkStream stream = client.GetStream();
-                        stream.Write(typeBytes, 0, 4);
-                        stream.Write(lengthBytes, 0, 4);
-                        if (data != null && data.Length > 0)
-                        {
-                            stream.Write(data, 0, data.Length);
-                        }
+                        NetworkStream s = client.GetStream();
+                        s.Write(typeBytes, 0, 4);
+                        s.Write(lengthBytes, 0, 4);
+                        if (data?.Length > 0) s.Write(data, 0, data.Length);
                     }
-                    catch
-                    {
-                        disconnected.Add(client);
-                    }
+                    catch { disconnected.Add(client); }
                 }
-                
-                foreach (TcpClient client in disconnected)
-                {
-                    clients.Remove(client);
-                    client.Close();
-                }
-                
-                if (disconnected.Count > 0)
-                {
-                    UpdateClientCount();
-                }
+                foreach (TcpClient c in disconnected) { clients.Remove(c); c.Close(); }
+                if (disconnected.Count > 0) UpdateClientCountUI();
             }
         }
 
         private void SendSyncData(TcpClient client)
         {
-            SyncData syncData = new SyncData
+            lock (lockObj)
             {
-                DrawHistory = drawHistory.ToArray(),
-                ImageHistory = imageHistory.ToArray()
-            };
-            
-            byte[] data = MessageSerializer.Serialize(syncData);
-            byte[] typeBytes = BitConverter.GetBytes((int)MessageType.SyncData);
-            byte[] lengthBytes = BitConverter.GetBytes(data.Length);
-            
-            try
-            {
-                NetworkStream stream = client.GetStream();
-                stream.Write(typeBytes, 0, 4);
-                stream.Write(lengthBytes, 0, 4);
-                stream.Write(data, 0, data.Length);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("Error sending sync data: " + ex.Message);
+                SyncData syncData = new SyncData
+                {
+                    DrawHistory = drawHistory.ToArray(),
+                    ImageHistory = imageHistory.ToArray()
+                };
+                byte[] data = MessageSerializer.Serialize(syncData);
+                byte[] typeBytes = BitConverter.GetBytes((int)MessageType.SyncData);
+                byte[] lengthBytes = BitConverter.GetBytes(data.Length);
+                try
+                {
+                    NetworkStream s = client.GetStream();
+                    s.Write(typeBytes, 0, 4);
+                    s.Write(lengthBytes, 0, 4);
+                    s.Write(data, 0, data.Length);
+                }
+                catch (Exception ex) { Console.WriteLine("Sync error: " + ex.Message); }
             }
         }
 
-        private void UpdateClientCount()
+        private void UpdateClientCountUI()
         {
-            if (labelClientCount.InvokeRequired)
+            if (panelClientCount.InvokeRequired)
             {
-                labelClientCount.Invoke((MethodInvoker)delegate {
-                    UpdateClientCount();
-                });
+                panelClientCount.Invoke((MethodInvoker)delegate { UpdateClientCountUI(); });
                 return;
             }
+            int count = clients.Count;
+            labelClientCount.Text = count.ToString();
 
-            labelClientCount.Text = $"Connected Clients: {clients.Count}";
-            
-            // Broadcast client count to all clients
-            byte[] countData = BitConverter.GetBytes(clients.Count);
+            byte[] countData = BitConverter.GetBytes(count);
             BroadcastMessage(MessageType.ClientCount, countData, null);
         }
 
-        private void SendEmailAlert()
+        private void SaveWhiteboardImageSafe()
         {
-            try
+            if (pictureBoxWhiteboard.InvokeRequired)
             {
-                // Configure your email settings here
-                string smtpServer = "smtp.gmail.com";
-                int smtpPort = 587;
-                string fromEmail = "your-email@gmail.com"; // Change this
-                string toEmail = "admin@example.com"; // Change this
-                string password = "your-app-password"; // Change this
-                
-                MailMessage mail = new MailMessage();
-                mail.From = new MailAddress(fromEmail);
-                mail.To.Add(toEmail);
-                mail.Subject = "Whiteboard Server Alert: Client Limit Reached";
-                mail.Body = $"The whiteboard server has reached the maximum client limit of {MAX_CLIENTS} clients at {DateTime.Now}.";
-                
-                SmtpClient smtp = new SmtpClient(smtpServer, smtpPort);
-                smtp.Credentials = new System.Net.NetworkCredential(fromEmail, password);
-                smtp.EnableSsl = true;
-                
-                smtp.Send(mail);
-                
-                Console.WriteLine("Email alert sent successfully");
+                pictureBoxWhiteboard.Invoke((MethodInvoker)delegate { SaveWhiteboardImageSafe(); });
+                return;
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine("Error sending email: " + ex.Message);
-                // Don't crash the server if email fails
-            }
-        }
-
-        private void SaveWhiteboardImage()
-        {
             try
             {
                 string fileName = $"Whiteboard_{DateTime.Now:yyyyMMdd_HHmmss}.png";
                 string filePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), fileName);
                 whiteboard.Save(filePath, System.Drawing.Imaging.ImageFormat.Png);
             }
-            catch (Exception ex)
+            catch (Exception ex) { Console.WriteLine("Save error: " + ex.Message); }
+        }
+
+        private void SendEmailAlert()
+        {
+            try
             {
-                Console.WriteLine("Error saving image: " + ex.Message);
+                // Configure your email settings below
+                string smtpServer = "smtp.gmail.com";
+                int smtpPort = 587;
+                string fromEmail = "your-email@gmail.com";
+                string toEmail = "admin@example.com";
+                string password = "your-app-password";
+
+                using (MailMessage mail = new MailMessage())
+                {
+                    mail.From = new MailAddress(fromEmail);
+                    mail.To.Add(toEmail);
+                    mail.Subject = "Whiteboard Alert: Max Clients Reached";
+                    mail.Body = $"Maximum client limit of {MAX_CLIENTS} reached at {DateTime.Now:yyyy-MM-dd HH:mm:ss}.";
+
+                    using (SmtpClient smtp = new SmtpClient(smtpServer, smtpPort))
+                    {
+                        smtp.Credentials = new NetworkCredential(fromEmail, password);
+                        smtp.EnableSsl = true;
+                        smtp.Send(mail);
+                    }
+                }
+                Console.WriteLine("Email alert sent");
             }
+            catch (Exception ex) { Console.WriteLine("Email error: " + ex.Message); }
+        }
+
+        private void SetCurrentColor(Color color)
+        {
+            currentColor = color;
+            panelColorPreview.BackColor = color;
+            isEraser = false;
+            UpdateEraserButtonState();
+        }
+
+        private void UpdateEraserButtonState()
+        {
+            btnEraser.BackColor = isEraser ? Color.FromArgb(231, 76, 60) : Color.FromArgb(236, 240, 241);
+            btnEraser.ForeColor = isEraser ? Color.White : Color.FromArgb(52, 73, 94);
         }
 
         private void pictureBoxWhiteboard_MouseDown(object sender, MouseEventArgs e)
         {
+            if (!isServerRunning) return;
             isDrawing = true;
             lastPoint = e.Location;
         }
 
         private void pictureBoxWhiteboard_MouseMove(object sender, MouseEventArgs e)
         {
-            if (isDrawing)
+            if (!isServerRunning || !isDrawing) return;
+
+            DrawData data = new DrawData
             {
-                DrawData data = new DrawData
-                {
-                    X1 = lastPoint.X,
-                    Y1 = lastPoint.Y,
-                    X2 = e.X,
-                    Y2 = e.Y,
-                    Thickness = currentThickness,
-                    IsEraser = isEraser
-                };
-                data.SetColor(currentColor);
-                
-                lock (lockObj)
-                {
-                    drawHistory.Add(data);
-                }
-                
-                DrawOnWhiteboard(data);
-                
-                byte[] msgData = MessageSerializer.Serialize(data);
-                BroadcastMessage(MessageType.DrawLine, msgData, null);
-                
-                lastPoint = e.Location;
+                X1 = lastPoint.X, Y1 = lastPoint.Y,
+                X2 = e.X, Y2 = e.Y,
+                Thickness = currentThickness,
+                IsEraser = isEraser
+            };
+            data.SetColor(currentColor);
+
+            lock (lockObj) { drawHistory.Add(data); }
+
+            DrawOnWhiteboardSafe(data);
+
+            byte[] msgData = MessageSerializer.Serialize(data);
+            BroadcastMessage(MessageType.DrawLine, msgData, null);
+
+            lastPoint = e.Location;
+        }
+
+        private void pictureBoxWhiteboard_MouseUp(object sender, MouseEventArgs e) { isDrawing = false; }
+
+        private void btnColor_Click(object sender, EventArgs e)
+        {
+            using (ColorDialog cd = new ColorDialog())
+            {
+                if (cd.ShowDialog() == DialogResult.OK)
+                    SetCurrentColor(cd.Color);
             }
         }
 
-        private void pictureBoxWhiteboard_MouseUp(object sender, MouseEventArgs e)
+        private void presetColor_Click(object sender, EventArgs e)
         {
-            isDrawing = false;
-        }
-
-        private void buttonColor_Click(object sender, EventArgs e)
-        {
-            ColorDialog colorDialog = new ColorDialog();
-            if (colorDialog.ShowDialog() == DialogResult.OK)
-            {
-                currentColor = colorDialog.Color;
-                panelColorPreview.BackColor = currentColor;
-                isEraser = false;
-            }
+            if (sender is Panel p)
+                SetCurrentColor(p.BackColor);
         }
 
         private void trackBarThickness_Scroll(object sender, EventArgs e)
         {
             currentThickness = trackBarThickness.Value;
-            labelThickness.Text = $"Thickness: {currentThickness}";
+            labelThicknessVal.Text = currentThickness.ToString();
         }
 
-        private void buttonClear_Click(object sender, EventArgs e)
+        private void btnEraser_Click(object sender, EventArgs e)
         {
-            lock (lockObj)
-            {
-                drawHistory.Clear();
-                imageHistory.Clear();
-            }
-            ClearWhiteboard();
+            isEraser = !isEraser;
+            UpdateEraserButtonState();
+        }
+
+        private void btnClear_Click(object sender, EventArgs e)
+        {
+            DialogResult dr = MessageBox.Show("Clear the entire whiteboard?", "Confirm",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (dr != DialogResult.Yes) return;
+
+            lock (lockObj) { drawHistory.Clear(); imageHistory.Clear(); }
+            ClearWhiteboardSafe();
             BroadcastMessage(MessageType.Clear, null, null);
         }
 
-        private void buttonEnd_Click(object sender, EventArgs e)
+        private void btnInsertImage_Click(object sender, EventArgs e)
         {
-            SaveWhiteboardImage();
-            BroadcastMessage(MessageType.End, null, null);
-            Application.Exit();
-        }
-
-        private void buttonEraser_Click(object sender, EventArgs e)
-        {
-            isEraser = !isEraser;
-            buttonEraser.BackColor = isEraser ? Color.LightGray : SystemColors.Control;
-        }
-
-        private void buttonInsertImage_Click(object sender, EventArgs e)
-        {
-            string url = textBoxImageUrl.Text.Trim();
+            string url = txtImageUrl.Text.Trim();
             if (string.IsNullOrEmpty(url))
             {
-                MessageBox.Show("Please enter an image URL");
+                MessageBox.Show("Please enter an image URL", "Insert Image", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
             try
             {
-                System.Net.WebClient webClient = new System.Net.WebClient();
-                byte[] imageBytes = webClient.DownloadData(url);
-                
-                using (MemoryStream ms = new MemoryStream(imageBytes))
+                using (System.Net.WebClient webClient = new System.Net.WebClient())
                 {
-                    Image img = Image.FromStream(ms);
-                    
-                    // Resize image if needed
-                    int maxWidth = 300;
-                    int maxHeight = 300;
-                    int newWidth = img.Width;
-                    int newHeight = img.Height;
-                    
-                    if (img.Width > maxWidth || img.Height > maxHeight)
+                    byte[] imageBytes = webClient.DownloadData(url);
+                    using (MemoryStream ms = new MemoryStream(imageBytes))
+                    using (Image img = Image.FromStream(ms))
                     {
-                        double ratioX = (double)maxWidth / img.Width;
-                        double ratioY = (double)maxHeight / img.Height;
-                        double ratio = Math.Min(ratioX, ratioY);
-                        
-                        newWidth = (int)(img.Width * ratio);
-                        newHeight = (int)(img.Height * ratio);
-                    }
-                    
-                    Bitmap resized = new Bitmap(img, newWidth, newHeight);
-                    using (MemoryStream resizedMs = new MemoryStream())
-                    {
-                        resized.Save(resizedMs, System.Drawing.Imaging.ImageFormat.Png);
-                        
-                        ImageData imageData = new ImageData
+                        int maxW = 300, maxH = 300;
+                        int newW = img.Width, newH = img.Height;
+                        if (newW > maxW || newH > maxH)
                         {
-                            ImageBytes = resizedMs.ToArray(),
-                            X = 50,
-                            Y = 50,
-                            Width = newWidth,
-                            Height = newHeight
-                        };
-                        
-                        lock (lockObj)
-                        {
-                            imageHistory.Add(imageData);
+                            double r = Math.Min((double)maxW / newW, (double)maxH / newH);
+                            newW = (int)(newW * r);
+                            newH = (int)(newH * r);
                         }
-                        
-                        DrawImageOnWhiteboard(imageData);
-                        
-                        byte[] msgData = MessageSerializer.Serialize(imageData);
-                        BroadcastMessage(MessageType.InsertImage, msgData, null);
+                        using (Bitmap resized = new Bitmap(img, newW, newH))
+                        using (MemoryStream rms = new MemoryStream())
+                        {
+                            resized.Save(rms, System.Drawing.Imaging.ImageFormat.Png);
+                            ImageData imgData = new ImageData
+                            {
+                                ImageBytes = rms.ToArray(),
+                                X = 50, Y = 50,
+                                Width = newW, Height = newH
+                            };
+                            lock (lockObj) { imageHistory.Add(imgData); }
+                            DrawImageOnWhiteboardSafe(imgData);
+                            byte[] msgData = MessageSerializer.Serialize(imgData);
+                            BroadcastMessage(MessageType.InsertImage, msgData, null);
+                        }
                     }
                 }
-                
-                textBoxImageUrl.Clear();
+                txtImageUrl.Clear();
             }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Error loading image: " + ex.Message);
-            }
+            catch (Exception ex) { MessageBox.Show("Error: " + ex.Message, "Image Error", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+        }
+
+        private void btnEnd_Click(object sender, EventArgs e)
+        {
+            if (isEnding) return;
+            DialogResult dr = MessageBox.Show("End session for ALL clients?\nWhiteboard will be saved as PNG.",
+                "End Session", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (dr != DialogResult.Yes) return;
+
+            isEnding = true;
+            SaveWhiteboardImageSafe();
+            BroadcastMessage(MessageType.End, null, null);
+            Application.Exit();
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
-            base.OnFormClosing(e);
-            
-            // Notify all clients to close
-            BroadcastMessage(MessageType.End, null, null);
-            
-            // Clean up
-            if (server != null)
+            isServerRunning = false;
+
+            if (!isEnding)
             {
-                server.Stop();
+                try { BroadcastMessage(MessageType.End, null, null); } catch { }
             }
-            
+
+            if (server != null) { try { server.Stop(); } catch { } }
+
             lock (lockObj)
             {
-                foreach (TcpClient client in clients)
-                {
-                    client.Close();
-                }
+                foreach (TcpClient c in clients) { try { c.Close(); } catch { } }
                 clients.Clear();
+            }
+
+            if (whiteboardGraphics != null) whiteboardGraphics.Dispose();
+            if (whiteboard != null) whiteboard.Dispose();
+
+            base.OnFormClosing(e);
+        }
+
+        private void Form1_Load(object sender, EventArgs e)
+        {
+            SetupColorPalette();
+            trackBarThickness_Scroll(null, null);
+            UpdateEraserButtonState();
+        }
+
+        private void SetupColorPalette()
+        {
+            Color[] colors = {
+                Color.FromArgb(52, 73, 94),  // Dark gray
+                Color.FromArgb(44, 62, 80),  // Darker gray
+                Color.FromArgb(231, 76, 60), // Red
+                Color.FromArgb(230, 126, 34), // Orange
+                Color.FromArgb(241, 196, 15), // Yellow
+                Color.FromArgb(46, 204, 113), // Green
+                Color.FromArgb(155, 89, 182), // Purple
+                Color.FromArgb(52, 152, 219), // Blue
+                Color.FromArgb(26, 188, 156), // Teal
+                Color.FromArgb(149, 165, 166), // Gray
+                Color.Black,
+                Color.White
+            };
+
+            flowPresetColors.Controls.Clear();
+            foreach (Color c in colors)
+            {
+                Panel p = new Panel
+                {
+                    Size = new Size(30, 30),
+                    BackColor = c,
+                    BorderStyle = BorderStyle.FixedSingle,
+                    Cursor = Cursors.Hand,
+                    Margin = new Padding(3)
+                };
+                if (c == Color.White) p.BorderStyle = BorderStyle.FixedSingle;
+                p.Click += presetColor_Click;
+                flowPresetColors.Controls.Add(p);
             }
         }
     }
