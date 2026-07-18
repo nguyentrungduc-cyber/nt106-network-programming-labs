@@ -132,3 +132,14 @@ publish/
 
 .vs/
 \
+
+# =========================
+# Ảnh chụp/lưu tự động khi chạy app (Lab06 Whiteboard Save Image...)
+# Không commit ảnh demo/test tự sinh ra lúc chạy chương trình lên Git.
+# =========================
+**/Pictures/
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.gif
