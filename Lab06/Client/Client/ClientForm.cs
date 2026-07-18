@@ -340,6 +340,8 @@ namespace Client
                 Console.WriteLine("ProcessDrawingMessage error: " + ex.Message);
             }
         }
+        private readonly object streamWriteLock = new object();
+
         private void SendMessage(string msg)
         {
             try
@@ -347,8 +349,14 @@ namespace Client
                 if (client != null && client.Connected && stream != null && stream.CanWrite)
                 {
                     byte[] data = Encoding.UTF8.GetBytes(msg + "\n");
-                    stream.Write(data, 0, data.Length);
-                    stream.Flush();
+                    // Lock để tránh 2 luồng cùng ghi chồng lên NetworkStream 1 lúc (VD: vừa gửi lệnh vẽ
+                    // từ background thread, vừa có lệnh khác gửi cùng lúc) — NetworkStream không tự
+                    // thread-safe cho việc ghi đồng thời.
+                    lock (streamWriteLock)
+                    {
+                        stream.Write(data, 0, data.Length);
+                        stream.Flush();
+                    }
                 }
                 else
                 {
@@ -605,17 +613,26 @@ namespace Client
 
         private void SendDrawCommand(string shape, Point start, Point end, Color color, float thickness)
         {
-            try
+            // Trước đây gọi SendMessage() trực tiếp trên UI thread — mỗi lần rê chuột vẽ (MouseMove
+            // bắn liên tục, có thể vài chục lần/giây) đều phải chờ stream.Write()+Flush() (I/O mạng
+            // đồng bộ) xong mới vẽ tiếp được, gây giật/khựng rõ rệt lúc vẽ, đặc biệt khi mạng chậm.
+            // Giờ đẩy việc gửi mạng sang background thread (Task.Run), UI thread chỉ lo vẽ, không
+            // còn bị chặn chờ I/O nữa.
+            string message = string.Format("DRAW;{0};{1};{2};{3};{4};{5};{6}",
+                shape, color.ToArgb(), thickness,
+                start.X, start.Y, end.X, end.Y);
+
+            System.Threading.Tasks.Task.Run(() =>
             {
-                string message = string.Format("DRAW;{0};{1};{2};{3};{4};{5};{6}",
-                    shape, color.ToArgb(), thickness,
-                    start.X, start.Y, end.X, end.Y);
-                SendMessage(message);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("SendDrawCommand error: " + ex.Message);
-            }
+                try
+                {
+                    SendMessage(message);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("SendDrawCommand error: " + ex.Message);
+                }
+            });
         }
         private void panelWhiteboard_MouseUp(object sender, MouseEventArgs e)
         {
