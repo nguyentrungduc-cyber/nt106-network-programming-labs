@@ -102,7 +102,7 @@ namespace Client
                 panelWhiteboard.MouseMove += PanelWhiteboard_MouseMove;
                 panelWhiteboard.MouseUp += panelWhiteboard_MouseUp;
 
-                btnInsertImage.Click += btnInsertImage_Click;
+                // btnInsertImage.Click += btnInsertImage_Click;
                 btnChooseColor.Click += btnChooseColor_Click;
 
                 comboBoxDrawMode.Items.Add("Freehand");
