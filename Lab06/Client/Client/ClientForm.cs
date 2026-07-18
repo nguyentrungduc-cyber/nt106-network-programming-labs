@@ -75,6 +75,17 @@ namespace Client
             {
                 InitializeComponent();
 
+                // Bật Double Buffering cho panelWhiteboard để chống giật/nhấp nháy (flicker) khi
+                // kéo-thả ảnh/vẽ liên tục. DoubleBuffered của Panel là protected nên phải set qua
+                // Reflection. this.DoubleBuffered=true (trong Designer) chỉ áp dụng cho Form,
+                // KHÔNG lan xuống panelWhiteboard — đây là nguyên nhân chính gây giật hình.
+                typeof(Panel).InvokeMember(
+                    "DoubleBuffered",
+                    System.Reflection.BindingFlags.SetProperty | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic,
+                    null,
+                    panelWhiteboard,
+                    new object[] { true });
+
                 drawingBitmap = new Bitmap(panelWhiteboard.Width, panelWhiteboard.Height);
                 graphics = Graphics.FromImage(drawingBitmap);
                 graphics.Clear(Color.White);
